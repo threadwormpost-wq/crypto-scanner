@@ -27,3 +27,8 @@ The script refreshes the table every 30 seconds by default and shows:
 - Current price
 - 1-hour, 24-hour and 7-day percentage changes
 - Market cap and volume
+
+It also computes indicator-driven opportunity scoring using:
+- RSI-14 from historical daily data
+- Multi-timeframe momentum analysis from 15-minute, 1-hour and 4-hour windows
+- Volume and market-cap normalization for ranking strength

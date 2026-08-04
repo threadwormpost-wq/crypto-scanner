@@ -1,0 +1,7 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+
+# Runtime/generated scanner artifacts
+.atlas_one_ohlc_cache.json
+trade_journal.csv
