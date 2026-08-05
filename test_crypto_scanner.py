@@ -968,6 +968,231 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertFalse(second_insert)
         self.assertEqual(len(rows), 1)
 
+    def test_record_trade_journal_entry_uses_portfolio_allocation_for_position_size(self):
+        data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.8,
+                "price_change_percentage_24h_in_currency": 5.0,
+                "price_change_percentage_7d_in_currency": 5.0,
+                "rsi_14": 55.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 72,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.8},
+                        "1h": {"trend": "Bullish", "change_percent": 1.4},
+                        "4h": {"trend": "Bullish", "change_percent": 3.2},
+                    },
+                },
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch("atlas_one.get_usd_to_gbp_rate", return_value=0.79):
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            inserted = atlas_one.record_trade_journal_entry(
+                data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                starting_balance=10_000.0,
+                position_size_pct=0.10,
+            )
+            rows = atlas_one.load_trade_journal_rows(journal_path)
+            snapshot = atlas_one.calculate_portfolio_snapshot(
+                data=data,
+                trade_rows=rows,
+                starting_balance=10_000.0,
+            )
+
+        self.assertTrue(inserted)
+        self.assertEqual(len(rows), 1)
+        position_units = atlas_one._parse_trade_journal_units(rows[0]["Position Size"])
+        entry_price = atlas_one._parse_trade_journal_currency(rows[0]["Entry Price"])
+        self.assertAlmostEqual(position_units * entry_price, 1_000.0, places=2)
+        self.assertAlmostEqual(snapshot["available_cash"], 9_000.0, places=2)
+        self.assertAlmostEqual(snapshot["invested_capital"], 1_000.0, places=2)
+        self.assertAlmostEqual(snapshot["current_portfolio_value"], 1_000.0, places=2)
+        self.assertAlmostEqual(snapshot["total_equity"], 10_000.0, places=2)
+
+    def test_calculate_portfolio_snapshot_tracks_multiple_open_trades(self):
+        bitcoin_data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.8,
+                "price_change_percentage_24h_in_currency": 5.0,
+                "price_change_percentage_7d_in_currency": 5.0,
+                "rsi_14": 55.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 72,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.8},
+                        "1h": {"trend": "Bullish", "change_percent": 1.4},
+                        "4h": {"trend": "Bullish", "change_percent": 3.2},
+                    },
+                },
+            }
+        ]
+        ethereum_data = [
+            {
+                "id": "ethereum",
+                "current_price": 3000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.6,
+                "price_change_percentage_24h_in_currency": 4.0,
+                "price_change_percentage_7d_in_currency": 6.0,
+                "rsi_14": 54.0,
+                "support_level": 2900.0,
+                "resistance_level": 3200.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 70,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.6},
+                        "1h": {"trend": "Bullish", "change_percent": 1.1},
+                        "4h": {"trend": "Bullish", "change_percent": 2.4},
+                    },
+                },
+            }
+        ]
+        combined_market_data = bitcoin_data + ethereum_data
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch("atlas_one.get_usd_to_gbp_rate", return_value=0.79):
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            first_insert = atlas_one.record_trade_journal_entry(
+                bitcoin_data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                starting_balance=10_000.0,
+                position_size_pct=0.25,
+            )
+            second_insert = atlas_one.record_trade_journal_entry(
+                ethereum_data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 5, 0),
+                starting_balance=10_000.0,
+                position_size_pct=0.25,
+            )
+            snapshot = atlas_one.calculate_portfolio_snapshot(
+                data=combined_market_data,
+                journal_path=journal_path,
+                starting_balance=10_000.0,
+            )
+
+        self.assertTrue(first_insert)
+        self.assertTrue(second_insert)
+        self.assertEqual(snapshot["open_trade_count"], 2)
+        self.assertAlmostEqual(snapshot["available_cash"], 5_625.0, places=2)
+        self.assertAlmostEqual(snapshot["invested_capital"], 4_375.0, places=2)
+        self.assertAlmostEqual(snapshot["current_portfolio_value"], 4_375.0, places=2)
+        self.assertAlmostEqual(snapshot["total_equity"], 10_000.0, places=2)
+
+    def test_record_trade_journal_entry_rejects_new_trade_when_cash_is_fully_committed(self):
+        bitcoin_data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.8,
+                "price_change_percentage_24h_in_currency": 5.0,
+                "price_change_percentage_7d_in_currency": 5.0,
+                "rsi_14": 55.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 72,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.8},
+                        "1h": {"trend": "Bullish", "change_percent": 1.4},
+                        "4h": {"trend": "Bullish", "change_percent": 3.2},
+                    },
+                },
+            }
+        ]
+        ethereum_data = [
+            {
+                "id": "ethereum",
+                "current_price": 3000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.6,
+                "price_change_percentage_24h_in_currency": 4.0,
+                "price_change_percentage_7d_in_currency": 6.0,
+                "rsi_14": 54.0,
+                "support_level": 2900.0,
+                "resistance_level": 3200.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 70,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.6},
+                        "1h": {"trend": "Bullish", "change_percent": 1.1},
+                        "4h": {"trend": "Bullish", "change_percent": 2.4},
+                    },
+                },
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch("atlas_one.get_usd_to_gbp_rate", return_value=0.79):
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            first_insert = atlas_one.record_trade_journal_entry(
+                bitcoin_data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                starting_balance=1_000.0,
+                position_size_pct=1.0,
+            )
+            second_insert = atlas_one.record_trade_journal_entry(
+                ethereum_data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 5, 0),
+                starting_balance=1_000.0,
+                position_size_pct=1.0,
+            )
+            snapshot = atlas_one.calculate_portfolio_snapshot(
+                data=bitcoin_data,
+                journal_path=journal_path,
+                starting_balance=1_000.0,
+            )
+
+        self.assertTrue(first_insert)
+        self.assertFalse(second_insert)
+        self.assertAlmostEqual(snapshot["available_cash"], 0.0, places=2)
+        self.assertAlmostEqual(snapshot["invested_capital"], 1_000.0, places=2)
+
+    def test_portfolio_helpers_reject_invalid_configuration(self):
+        with self.assertRaises(ValueError):
+            atlas_one.calculate_position_allocation(1_000.0, position_size_pct=0)
+
+        with self.assertRaises(ValueError):
+            atlas_one.calculate_position_allocation(1_000.0, position_size_pct=1.1)
+
+        with self.assertRaises(ValueError):
+            atlas_one.calculate_portfolio_snapshot(starting_balance=-1)
+
     def test_trade_journal_migrates_legacy_headers_and_preserves_rows(self):
         legacy_headers = [
             "Date/Time",
@@ -1195,10 +1420,17 @@ class OpportunityScoreTests(unittest.TestCase):
 
         self.assertTrue(first_result["opened_trade"])
         self.assertEqual(first_result["closed_trades"], 0)
+        self.assertAlmostEqual(first_result["portfolio_snapshot"]["available_cash"], 9_000.0, places=2)
+        self.assertAlmostEqual(first_result["portfolio_snapshot"]["invested_capital"], 1_000.0, places=2)
         self.assertEqual(second_result["closed_trades"], 1)
         self.assertEqual(second_result["performance_statistics"]["total_trades"], 1)
         self.assertEqual(second_result["performance_statistics"]["winning_trades"], 1)
         self.assertGreater(second_result["performance_statistics"]["cumulative_profit_loss"], 0.0)
+        self.assertEqual(second_result["portfolio_snapshot"]["open_trade_count"], 0)
+        self.assertAlmostEqual(second_result["portfolio_snapshot"]["current_portfolio_value"], 0.0, places=2)
+        self.assertGreater(second_result["portfolio_snapshot"]["available_cash"], 10_000.0)
+        self.assertGreater(second_result["portfolio_snapshot"]["realized_profit_loss"], 0.0)
+        self.assertAlmostEqual(second_result["portfolio_snapshot"]["unrealized_profit_loss"], 0.0, places=2)
 
     def test_performance_statistics_individual_metrics(self):
         trade_rows = [

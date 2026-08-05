@@ -81,6 +81,8 @@ EXIT_REASON_DEFAULT = "Not Triggered"
 EXIT_REASON_STOP_LOSS = "Stop Loss"
 EXIT_REASON_TAKE_PROFIT_1 = "Take Profit 1"
 EXIT_REASON_TAKE_PROFIT_2 = "Take Profit 2"
+DEFAULT_PAPER_STARTING_BALANCE = 10_000.0
+DEFAULT_PAPER_POSITION_SIZE_PCT = 0.10
 
 # Rate limiting and caching configuration
 MIN_REQUEST_INTERVAL = 0.5  # Minimum seconds between API requests to respect rate limits
@@ -1868,6 +1870,21 @@ def _parse_trade_journal_percent(value: object) -> float:
         return 0.0
 
 
+def _parse_trade_journal_units(value: object) -> float:
+    """Parse stored position sizes into float units."""
+    if value is None:
+        return 0.0
+
+    raw = str(value).strip()
+    if not raw:
+        return 0.0
+
+    try:
+        return float(raw.replace(",", ""))
+    except ValueError:
+        return 0.0
+
+
 def _parse_trade_journal_timestamp(value: object) -> datetime | None:
     """Parse stored journal timestamps using the scanner's standard format."""
     if value is None:
@@ -1912,7 +1929,110 @@ def _find_market_entry_by_coin_name(data: List[dict], coin_name: str) -> dict | 
     return None
 
 
-def _build_trade_journal_row(context: dict, strategy_score: int, recommendation_rationale: str, timestamp_value: datetime) -> dict:
+def _get_entry_price_from_trade_row(row: dict) -> float:
+    """Return the stored entry price for a journal row."""
+    return _parse_trade_journal_currency(row.get("Entry Price") or row.get("Current Price"))
+
+
+def _get_trade_cost_basis(row: dict) -> float:
+    """Return the capital committed at entry for a journal row."""
+    return _get_entry_price_from_trade_row(row) * _parse_trade_journal_units(row.get("Position Size"))
+
+
+def _validate_paper_starting_balance(starting_balance: float) -> float:
+    """Validate and normalize the configured paper starting balance."""
+    normalized_balance = float(starting_balance)
+    if normalized_balance < 0:
+        raise ValueError("starting_balance must be zero or greater")
+    return normalized_balance
+
+
+def _validate_paper_position_size_pct(position_size_pct: float) -> float:
+    """Validate and normalize the configured per-trade allocation percentage."""
+    normalized_pct = float(position_size_pct)
+    if normalized_pct <= 0 or normalized_pct > 1:
+        raise ValueError("position_size_pct must be greater than 0 and at most 1")
+    return normalized_pct
+
+
+def calculate_position_allocation(
+    available_cash: float,
+    position_size_pct: float = DEFAULT_PAPER_POSITION_SIZE_PCT,
+) -> float:
+    """Return the amount of available cash to allocate to the next paper trade."""
+    normalized_available_cash = max(0.0, float(available_cash))
+    normalized_pct = _validate_paper_position_size_pct(position_size_pct)
+    return normalized_available_cash * normalized_pct
+
+
+def calculate_portfolio_snapshot(
+    data: List[dict] | None = None,
+    trade_rows: List[dict] | None = None,
+    journal_path: str = TRADE_JOURNAL_FILE,
+    starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
+) -> dict:
+    """Build a reusable virtual-portfolio snapshot from journal rows and current prices."""
+    normalized_starting_balance = _validate_paper_starting_balance(starting_balance)
+    market_data = data or []
+    rows = load_trade_journal_rows(journal_path) if trade_rows is None else trade_rows
+    gbp_rate = get_usd_to_gbp_rate()
+
+    available_cash = normalized_starting_balance
+    invested_capital = 0.0
+    current_portfolio_value = 0.0
+    realized_profit_loss = 0.0
+    open_trade_count = 0
+    closed_trade_count = 0
+
+    for row in rows:
+        position_units = _parse_trade_journal_units(row.get("Position Size"))
+        if position_units <= 0:
+            continue
+
+        entry_price = _get_entry_price_from_trade_row(row)
+        invested_amount = entry_price * position_units
+        status = str(row.get("Trade Status") or "").strip()
+
+        if _trade_status_is_open(status):
+            open_trade_count += 1
+            available_cash -= invested_amount
+            invested_capital += invested_amount
+
+            market_entry = _find_market_entry_by_coin_name(market_data, row.get("Coin", ""))
+            current_price = entry_price
+            if market_entry is not None:
+                current_price = _get_current_price(market_entry) * gbp_rate
+            current_portfolio_value += current_price * position_units
+        elif status == TRADE_STATUS_CLOSED:
+            closed_trade_count += 1
+            exit_price = _parse_trade_journal_currency(row.get("Exit Price"))
+            available_cash -= invested_amount
+            available_cash += exit_price * position_units
+            realized_profit_loss += (exit_price - entry_price) * position_units
+
+    unrealized_profit_loss = current_portfolio_value - invested_capital
+    total_equity = available_cash + current_portfolio_value
+
+    return {
+        "starting_balance": normalized_starting_balance,
+        "available_cash": available_cash,
+        "invested_capital": invested_capital,
+        "current_portfolio_value": current_portfolio_value,
+        "total_equity": total_equity,
+        "realized_profit_loss": realized_profit_loss,
+        "unrealized_profit_loss": unrealized_profit_loss,
+        "open_trade_count": open_trade_count,
+        "closed_trade_count": closed_trade_count,
+    }
+
+
+def _build_trade_journal_row(
+    context: dict,
+    strategy_score: int,
+    recommendation_rationale: str,
+    timestamp_value: datetime,
+    position_size_units: float,
+) -> dict:
     """Build the persisted journal row for a newly opened paper trade."""
     rsi_value = format_rsi(context["entry"])
     current_price_gbp = context["current_price_gbp"]
@@ -1932,7 +2052,7 @@ def _build_trade_journal_row(context: dict, strategy_score: int, recommendation_
         "Take Profit 1": f"£{context['take_profit_1']:,.2f}",
         "Take Profit 2": f"£{context['take_profit_2']:,.2f}",
         "Risk/Reward Ratio": f"{context['risk_reward_ratio']:.2f}",
-        "Position Size": f"{context['suggested_position_size']:.2f}",
+        "Position Size": f"{position_size_units:.8f}",
         "Risk Level": context["risk_level"],
         "Trend": context["trend"],
         "RSI": rsi_value,
@@ -2029,8 +2149,8 @@ def update_open_paper_trades(
         stop_loss = _parse_trade_journal_currency(row.get("Stop Loss"))
         take_profit_1 = _parse_trade_journal_currency(row.get("Take Profit 1"))
         take_profit_2 = _parse_trade_journal_currency(row.get("Take Profit 2"))
-        entry_price = _parse_trade_journal_currency(row.get("Entry Price") or row.get("Current Price"))
-        position_size = float(str(row.get("Position Size") or "0").replace(",", "")) if row.get("Position Size") else 0.0
+        entry_price = _get_entry_price_from_trade_row(row)
+        position_size = _parse_trade_journal_units(row.get("Position Size"))
 
         exit_result = _evaluate_trade_exit(current_price_gbp, stop_loss, take_profit_1, take_profit_2)
         if exit_result is None:
@@ -2181,6 +2301,8 @@ def record_trade_journal_entry(
     journal_path: str = TRADE_JOURNAL_FILE,
     seen_entries: set[tuple] | None = None,
     timestamp: datetime | None = None,
+    starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
+    position_size_pct: float = DEFAULT_PAPER_POSITION_SIZE_PCT,
 ) -> bool:
     """Open a paper trade for the top opportunity when the existing strategy says BUY."""
     context = _get_top_opportunity_context(data)
@@ -2193,20 +2315,46 @@ def record_trade_journal_entry(
     _, strategy_score, recommendation_rationale = _build_strategy_scorecard(context)
 
     timestamp_value = timestamp or datetime.now()
-    row = _build_trade_journal_row(context, strategy_score, recommendation_rationale, timestamp_value)
+    file_exists = os.path.exists(journal_path)
+    needs_header = not file_exists or os.path.getsize(journal_path) == 0
+    trade_rows: List[dict] = []
+    if not needs_header:
+        _ensure_trade_journal_schema(journal_path)
+        trade_rows = load_trade_journal_rows(journal_path)
+        if _has_open_trade_for_coin(trade_rows, context["display_name"]):
+            return False
+
+    portfolio_snapshot = calculate_portfolio_snapshot(
+        data=data,
+        trade_rows=trade_rows,
+        journal_path=journal_path,
+        starting_balance=starting_balance,
+    )
+    allocation_amount = calculate_position_allocation(
+        portfolio_snapshot["available_cash"],
+        position_size_pct=position_size_pct,
+    )
+    entry_price_gbp = float(context["current_price_gbp"])
+    if allocation_amount <= 0 or entry_price_gbp <= 0:
+        return False
+
+    position_size_units = allocation_amount / entry_price_gbp
+    if position_size_units <= 0:
+        return False
+
+    row = _build_trade_journal_row(
+        context,
+        strategy_score,
+        recommendation_rationale,
+        timestamp_value,
+        position_size_units,
+    )
     dedupe_key = _dedupe_trade_journal_row(row)
 
     if seen_entries is not None:
         if dedupe_key in seen_entries:
             return False
         seen_entries.add(dedupe_key)
-
-    file_exists = os.path.exists(journal_path)
-    needs_header = not file_exists or os.path.getsize(journal_path) == 0
-    if not needs_header:
-        _ensure_trade_journal_schema(journal_path)
-        if _has_open_trade_for_coin(load_trade_journal_rows(journal_path), context["display_name"]):
-            return False
 
     with open(journal_path, "a", newline="", encoding="utf-8") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=TRADE_JOURNAL_HEADERS)
@@ -2222,6 +2370,8 @@ def process_paper_trades(
     journal_path: str = TRADE_JOURNAL_FILE,
     seen_entries: set[tuple] | None = None,
     timestamp: datetime | None = None,
+    starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
+    position_size_pct: float = DEFAULT_PAPER_POSITION_SIZE_PCT,
 ) -> dict:
     """Advance the paper-trading engine for a scan by closing then opening trades."""
     closed_trades = update_open_paper_trades(data, journal_path=journal_path, timestamp=timestamp)
@@ -2230,12 +2380,20 @@ def process_paper_trades(
         journal_path=journal_path,
         seen_entries=seen_entries,
         timestamp=timestamp,
+        starting_balance=starting_balance,
+        position_size_pct=position_size_pct,
     )
     trade_rows = load_trade_journal_rows(journal_path)
     return {
         "opened_trade": opened_trade,
         "closed_trades": closed_trades,
         "performance_statistics": calculate_performance_statistics(trade_rows),
+        "portfolio_snapshot": calculate_portfolio_snapshot(
+            data=data,
+            trade_rows=trade_rows,
+            journal_path=journal_path,
+            starting_balance=starting_balance,
+        ),
     }
 
 
