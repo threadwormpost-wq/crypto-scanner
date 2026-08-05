@@ -52,11 +52,13 @@ TRADE_JOURNAL_HEADERS = [
     "Suggested Action",
     "Confidence",
     "Current Price",
+    "Entry Price",
     "Entry Zone",
     "Stop Loss",
     "Take Profit 1",
     "Take Profit 2",
     "Risk/Reward Ratio",
+    "Position Size",
     "Risk Level",
     "Trend",
     "RSI",
@@ -73,7 +75,12 @@ TRADE_JOURNAL_HEADERS = [
 ]
 
 TRADE_STATUS_DEFAULT = "Pending"
+TRADE_STATUS_OPEN = "Open"
+TRADE_STATUS_CLOSED = "Closed"
 EXIT_REASON_DEFAULT = "Not Triggered"
+EXIT_REASON_STOP_LOSS = "Stop Loss"
+EXIT_REASON_TAKE_PROFIT_1 = "Take Profit 1"
+EXIT_REASON_TAKE_PROFIT_2 = "Take Profit 2"
 
 # Rate limiting and caching configuration
 MIN_REQUEST_INTERVAL = 0.5  # Minimum seconds between API requests to respect rate limits
@@ -1811,6 +1818,16 @@ def load_trade_journal_rows(journal_path: str = TRADE_JOURNAL_FILE) -> List[dict
         return list(csv.DictReader(file_obj))
 
 
+def _write_trade_journal_rows(rows: List[dict], journal_path: str = TRADE_JOURNAL_FILE) -> None:
+    """Rewrite the trade journal with the provided rows."""
+    with open(journal_path, "w", newline="", encoding="utf-8") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=TRADE_JOURNAL_HEADERS)
+        writer.writeheader()
+        for row in rows:
+            normalized_row = {header: row.get(header, "") for header in TRADE_JOURNAL_HEADERS}
+            writer.writerow(normalized_row)
+
+
 def _parse_trade_journal_currency(value: object) -> float:
     """Parse currency strings like '£1,234.56' or '-£120.00' into floats."""
     if value is None:
@@ -1849,6 +1866,196 @@ def _parse_trade_journal_percent(value: object) -> float:
         return float(normalized)
     except ValueError:
         return 0.0
+
+
+def _parse_trade_journal_timestamp(value: object) -> datetime | None:
+    """Parse stored journal timestamps using the scanner's standard format."""
+    if value is None:
+        return None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _format_trade_duration(started_at: datetime | None, ended_at: datetime | None) -> str:
+    """Return a compact human-readable trade duration."""
+    if started_at is None or ended_at is None or ended_at < started_at:
+        return ""
+
+    total_seconds = int((ended_at - started_at).total_seconds())
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    parts: List[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _find_market_entry_by_coin_name(data: List[dict], coin_name: str) -> dict | None:
+    """Return the current market snapshot entry for a journal coin name."""
+    for display_name, coin_id in COINS:
+        if display_name != coin_name:
+            continue
+        return next((entry for entry in data if entry.get("id") == coin_id), None)
+    return None
+
+
+def _build_trade_journal_row(context: dict, strategy_score: int, recommendation_rationale: str, timestamp_value: datetime) -> dict:
+    """Build the persisted journal row for a newly opened paper trade."""
+    rsi_value = format_rsi(context["entry"])
+    current_price_gbp = context["current_price_gbp"]
+    entry_zone = f"£{context['entry_zone_low']:,.2f} - £{context['entry_zone_high']:,.2f}"
+
+    return {
+        "Date/Time": timestamp_value.strftime("%Y-%m-%d %H:%M:%S"),
+        "Coin": context["display_name"],
+        "Opportunity Score": str(context["score"]),
+        "Strategy Score": str(strategy_score),
+        "Suggested Action": context["suggested_action"],
+        "Confidence": f"{context['confidence']}%",
+        "Current Price": f"£{current_price_gbp:,.2f}",
+        "Entry Price": f"£{current_price_gbp:,.2f}",
+        "Entry Zone": entry_zone,
+        "Stop Loss": f"£{context['stop_loss']:,.2f}",
+        "Take Profit 1": f"£{context['take_profit_1']:,.2f}",
+        "Take Profit 2": f"£{context['take_profit_2']:,.2f}",
+        "Risk/Reward Ratio": f"{context['risk_reward_ratio']:.2f}",
+        "Position Size": f"{context['suggested_position_size']:.2f}",
+        "Risk Level": context["risk_level"],
+        "Trend": context["trend"],
+        "RSI": rsi_value,
+        "Volume": context["volume_status"],
+        "Recommendation Rationale": recommendation_rationale,
+        "Trade Status": TRADE_STATUS_OPEN,
+        "Exit Price": "",
+        "Exit Time": "",
+        "Exit Reason": EXIT_REASON_DEFAULT,
+        "Profit/Loss (£)": "£0.00",
+        "Profit/Loss (%)": "0.00%",
+        "Trade Duration": "",
+        "Notes": "",
+    }
+
+
+def _dedupe_trade_journal_row(row: dict) -> tuple:
+    """Build an in-memory dedupe key for a pending paper trade row."""
+    return (
+        row["Coin"],
+        row["Opportunity Score"],
+        row["Strategy Score"],
+        row["Suggested Action"],
+        row["Confidence"],
+        row["Current Price"],
+        row["Entry Price"],
+        row["Entry Zone"],
+        row["Stop Loss"],
+        row["Take Profit 1"],
+        row["Take Profit 2"],
+        row["Risk/Reward Ratio"],
+        row["Position Size"],
+        row["Risk Level"],
+        row["Trend"],
+        row["RSI"],
+        row["Volume"],
+        row["Recommendation Rationale"],
+        row["Trade Status"],
+        row["Exit Price"],
+        row["Exit Time"],
+        row["Exit Reason"],
+        row["Profit/Loss (£)"],
+        row["Profit/Loss (%)"],
+        row["Trade Duration"],
+        row["Notes"],
+    )
+
+
+def _trade_status_is_open(value: object) -> bool:
+    """Return whether a stored trade status still represents an open paper trade."""
+    return str(value or "").strip() in {TRADE_STATUS_DEFAULT, TRADE_STATUS_OPEN}
+
+
+def _has_open_trade_for_coin(trade_rows: List[dict], coin_name: str) -> bool:
+    """Return whether the specified coin already has an open paper trade."""
+    return any(row.get("Coin") == coin_name and _trade_status_is_open(row.get("Trade Status")) for row in trade_rows)
+
+
+def _evaluate_trade_exit(current_price_gbp: float, stop_loss: float, take_profit_1: float, take_profit_2: float) -> tuple[float, str] | None:
+    """Return the exit price and reason when an open trade should be closed."""
+    if current_price_gbp <= stop_loss:
+        return stop_loss, EXIT_REASON_STOP_LOSS
+    if current_price_gbp >= take_profit_2:
+        return take_profit_2, EXIT_REASON_TAKE_PROFIT_2
+    if current_price_gbp >= take_profit_1:
+        return take_profit_1, EXIT_REASON_TAKE_PROFIT_1
+    return None
+
+
+def update_open_paper_trades(
+    data: List[dict],
+    journal_path: str = TRADE_JOURNAL_FILE,
+    timestamp: datetime | None = None,
+) -> int:
+    """Close open paper trades whose stop-loss or take-profit has been reached."""
+    trade_rows = load_trade_journal_rows(journal_path)
+    if not trade_rows:
+        return 0
+
+    timestamp_value = timestamp or datetime.now()
+    gbp_rate = get_usd_to_gbp_rate()
+    closed_trade_count = 0
+    rows_changed = False
+
+    for row in trade_rows:
+        if not _trade_status_is_open(row.get("Trade Status")):
+            continue
+
+        market_entry = _find_market_entry_by_coin_name(data, row.get("Coin", ""))
+        if market_entry is None:
+            continue
+
+        current_price_gbp = _get_current_price(market_entry) * gbp_rate
+        stop_loss = _parse_trade_journal_currency(row.get("Stop Loss"))
+        take_profit_1 = _parse_trade_journal_currency(row.get("Take Profit 1"))
+        take_profit_2 = _parse_trade_journal_currency(row.get("Take Profit 2"))
+        entry_price = _parse_trade_journal_currency(row.get("Entry Price") or row.get("Current Price"))
+        position_size = float(str(row.get("Position Size") or "0").replace(",", "")) if row.get("Position Size") else 0.0
+
+        exit_result = _evaluate_trade_exit(current_price_gbp, stop_loss, take_profit_1, take_profit_2)
+        if exit_result is None:
+            continue
+
+        exit_price, exit_reason = exit_result
+        profit_loss_value = position_size * (exit_price - entry_price)
+        profit_loss_percent = ((exit_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
+        opened_at = _parse_trade_journal_timestamp(row.get("Date/Time"))
+
+        row["Trade Status"] = TRADE_STATUS_CLOSED
+        row["Exit Price"] = f"£{exit_price:,.2f}"
+        row["Exit Time"] = timestamp_value.strftime("%Y-%m-%d %H:%M:%S")
+        row["Exit Reason"] = exit_reason
+        row["Profit/Loss (£)"] = f"£{profit_loss_value:,.2f}"
+        row["Profit/Loss (%)"] = f"{profit_loss_percent:.2f}%"
+        row["Trade Duration"] = _format_trade_duration(opened_at, timestamp_value)
+        closed_trade_count += 1
+        rows_changed = True
+
+    if rows_changed:
+        _ensure_trade_journal_schema(journal_path)
+        _write_trade_journal_rows(trade_rows, journal_path=journal_path)
+
+    return closed_trade_count
 
 
 def _extract_trade_profit_values(trade_rows: List[dict]) -> List[float]:
@@ -1975,71 +2182,19 @@ def record_trade_journal_entry(
     seen_entries: set[tuple] | None = None,
     timestamp: datetime | None = None,
 ) -> bool:
-    """Append the top recommendation to the trade journal CSV with per-scan deduplication."""
+    """Open a paper trade for the top opportunity when the existing strategy says BUY."""
     context = _get_top_opportunity_context(data)
     if context is None:
+        return False
+
+    if context.get("suggested_action") != "BUY":
         return False
 
     _, strategy_score, recommendation_rationale = _build_strategy_scorecard(context)
 
     timestamp_value = timestamp or datetime.now()
-    rsi_value = format_rsi(context["entry"])
-    entry_zone = f"£{context['entry_zone_low']:,.2f} - £{context['entry_zone_high']:,.2f}"
-
-    row = {
-        "Date/Time": timestamp_value.strftime("%Y-%m-%d %H:%M:%S"),
-        "Coin": context["display_name"],
-        "Opportunity Score": str(context["score"]),
-        "Strategy Score": str(strategy_score),
-        "Suggested Action": context["suggested_action"],
-        "Confidence": f"{context['confidence']}%",
-        "Current Price": f"£{context['current_price_gbp']:,.2f}",
-        "Entry Zone": entry_zone,
-        "Stop Loss": f"£{context['stop_loss']:,.2f}",
-        "Take Profit 1": f"£{context['take_profit_1']:,.2f}",
-        "Take Profit 2": f"£{context['take_profit_2']:,.2f}",
-        "Risk/Reward Ratio": f"{context['risk_reward_ratio']:.2f}",
-        "Risk Level": context["risk_level"],
-        "Trend": context["trend"],
-        "RSI": rsi_value,
-        "Volume": context["volume_status"],
-        "Recommendation Rationale": recommendation_rationale,
-        "Trade Status": TRADE_STATUS_DEFAULT,
-        "Exit Price": "",
-        "Exit Time": "",
-        "Exit Reason": EXIT_REASON_DEFAULT,
-        "Profit/Loss (£)": "£0.00",
-        "Profit/Loss (%)": "0.00%",
-        "Trade Duration": "",
-        "Notes": "",
-    }
-
-    dedupe_key = (
-        row["Coin"],
-        row["Opportunity Score"],
-        row["Strategy Score"],
-        row["Suggested Action"],
-        row["Confidence"],
-        row["Current Price"],
-        row["Entry Zone"],
-        row["Stop Loss"],
-        row["Take Profit 1"],
-        row["Take Profit 2"],
-        row["Risk/Reward Ratio"],
-        row["Risk Level"],
-        row["Trend"],
-        row["RSI"],
-        row["Volume"],
-        row["Recommendation Rationale"],
-        row["Trade Status"],
-        row["Exit Price"],
-        row["Exit Time"],
-        row["Exit Reason"],
-        row["Profit/Loss (£)"],
-        row["Profit/Loss (%)"],
-        row["Trade Duration"],
-        row["Notes"],
-    )
+    row = _build_trade_journal_row(context, strategy_score, recommendation_rationale, timestamp_value)
+    dedupe_key = _dedupe_trade_journal_row(row)
 
     if seen_entries is not None:
         if dedupe_key in seen_entries:
@@ -2050,6 +2205,8 @@ def record_trade_journal_entry(
     needs_header = not file_exists or os.path.getsize(journal_path) == 0
     if not needs_header:
         _ensure_trade_journal_schema(journal_path)
+        if _has_open_trade_for_coin(load_trade_journal_rows(journal_path), context["display_name"]):
+            return False
 
     with open(journal_path, "a", newline="", encoding="utf-8") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=TRADE_JOURNAL_HEADERS)
@@ -2058,6 +2215,28 @@ def record_trade_journal_entry(
         writer.writerow(row)
 
     return True
+
+
+def process_paper_trades(
+    data: List[dict],
+    journal_path: str = TRADE_JOURNAL_FILE,
+    seen_entries: set[tuple] | None = None,
+    timestamp: datetime | None = None,
+) -> dict:
+    """Advance the paper-trading engine for a scan by closing then opening trades."""
+    closed_trades = update_open_paper_trades(data, journal_path=journal_path, timestamp=timestamp)
+    opened_trade = record_trade_journal_entry(
+        data,
+        journal_path=journal_path,
+        seen_entries=seen_entries,
+        timestamp=timestamp,
+    )
+    trade_rows = load_trade_journal_rows(journal_path)
+    return {
+        "opened_trade": opened_trade,
+        "closed_trades": closed_trades,
+        "performance_statistics": calculate_performance_statistics(trade_rows),
+    }
 
 
 def build_top_opportunity_analysis(data: List[dict]) -> str:
@@ -2421,7 +2600,7 @@ def main() -> None:
     console.print()
     console.print(build_top_opportunity_analysis(latest_market_data))
     try:
-        record_trade_journal_entry(latest_market_data, seen_entries=scan_journal_entries)
+        process_paper_trades(latest_market_data, seen_entries=scan_journal_entries)
     except OSError as exc:
         logger.warning("Could not write trade journal entry: %s", exc)
     console.print()
@@ -2453,6 +2632,7 @@ def main() -> None:
                 try:
                     # Enrich with indicators (reuses cached historical/intraday prices when available).
                     latest_market_data = enrich_market_data_with_indicators(market_data, cache=cache)
+                    process_paper_trades(latest_market_data, seen_entries=scan_journal_entries)
                 except requests.RequestException as exc:
                     console.print(f"[bold red]Could not fetch data: {exc}[/bold red]")
                     if not latest_market_data:

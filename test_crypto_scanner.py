@@ -814,8 +814,8 @@ class OpportunityScoreTests(unittest.TestCase):
             "atlas_one.build_top_opportunity_analysis",
             return_value=sentinel_analysis,
         ), patch(
-            "atlas_one.record_trade_journal_entry",
-        ), patch(
+            "atlas_one.process_paper_trades",
+        ) as mock_process_paper_trades, patch(
             "atlas_one.build_trade_plan",
             return_value=sentinel_trade_plan,
         ), patch(
@@ -828,6 +828,7 @@ class OpportunityScoreTests(unittest.TestCase):
 
         self.assertEqual(mock_fetch_market_data.call_count, 2)
         self.assertEqual(mock_enrich.call_count, 2)
+        self.assertEqual(mock_process_paper_trades.call_count, 2)
         mock_build_table.assert_called_once_with(initial_enriched)
         printed_values = [call_args.args[0] for call_args in mock_console.print.call_args_list if call_args.args]
         self.assertEqual(printed_values.count(sentinel_table), 1)
@@ -886,11 +887,13 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIn("Suggested Action", rows[0])
         self.assertIn("Confidence", rows[0])
         self.assertIn("Current Price", rows[0])
+        self.assertIn("Entry Price", rows[0])
         self.assertIn("Entry Zone", rows[0])
         self.assertIn("Stop Loss", rows[0])
         self.assertIn("Take Profit 1", rows[0])
         self.assertIn("Take Profit 2", rows[0])
         self.assertIn("Risk/Reward Ratio", rows[0])
+        self.assertIn("Position Size", rows[0])
         self.assertIn("Risk Level", rows[0])
         self.assertIn("Trend", rows[0])
         self.assertIn("RSI", rows[0])
@@ -904,7 +907,9 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIn("Profit/Loss (%)", rows[0])
         self.assertIn("Trade Duration", rows[0])
         self.assertIn("Notes", rows[0])
-        self.assertEqual(rows[0]["Trade Status"], "Pending")
+        self.assertEqual(rows[0]["Trade Status"], "Open")
+        self.assertEqual(rows[0]["Current Price"], rows[0]["Entry Price"])
+        self.assertNotEqual(rows[0]["Position Size"], "")
         self.assertEqual(rows[0]["Exit Price"], "")
         self.assertEqual(rows[0]["Exit Time"], "")
         self.assertEqual(rows[0]["Exit Reason"], "Not Triggered")
@@ -1054,6 +1059,147 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["Trade Status"], "")
         self.assertEqual(rows[0]["Exit Reason"], "")
 
+    def test_record_trade_journal_entry_skips_non_buy_opportunities(self):
+        data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 100_000_000,
+                "total_volume": 1_000,
+                "price_change_percentage_1h_in_currency": -0.1,
+                "price_change_percentage_24h_in_currency": -1.0,
+                "price_change_percentage_7d_in_currency": 0.2,
+                "rsi_14": 78.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Near Resistance",
+                "multi_timeframe": {
+                    "composite_trend": "Sideways",
+                    "composite_score": 45,
+                    "timeframes": {
+                        "15m": {"trend": "Sideways", "change_percent": 0.0},
+                        "1h": {"trend": "Bearish", "change_percent": -0.1},
+                        "4h": {"trend": "Sideways", "change_percent": 0.1},
+                    },
+                },
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+
+            inserted = atlas_one.record_trade_journal_entry(
+                data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+            )
+
+        self.assertFalse(inserted)
+        self.assertFalse(os.path.exists(journal_path))
+
+    def test_update_open_paper_trades_closes_trade_at_take_profit(self):
+        opening_data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.8,
+                "price_change_percentage_24h_in_currency": 5.0,
+                "price_change_percentage_7d_in_currency": 5.0,
+                "rsi_14": 55.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 72,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.8},
+                        "1h": {"trend": "Bullish", "change_percent": 1.4},
+                        "4h": {"trend": "Bullish", "change_percent": 3.2},
+                    },
+                },
+            }
+        ]
+        closing_data = [{"id": "bitcoin", "current_price": 56000}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            inserted = atlas_one.record_trade_journal_entry(
+                opening_data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+            )
+            closed_count = atlas_one.update_open_paper_trades(
+                closing_data,
+                journal_path=journal_path,
+                timestamp=datetime(2026, 7, 27, 16, 30, 0),
+            )
+
+            with open(journal_path, newline="", encoding="utf-8") as file_obj:
+                rows = list(csv.DictReader(file_obj))
+
+        self.assertTrue(inserted)
+        self.assertEqual(closed_count, 1)
+        self.assertEqual(rows[0]["Trade Status"], "Closed")
+        self.assertEqual(rows[0]["ExitReason"] if "ExitReason" in rows[0] else rows[0]["Exit Reason"], "Take Profit 2")
+        self.assertEqual(rows[0]["Exit Time"], "2026-07-27 16:30:00")
+        self.assertEqual(rows[0]["Trade Duration"], "4h 30m")
+        self.assertTrue(atlas_one._parse_trade_journal_currency(rows[0]["Profit/Loss (£)"]) > 0)
+        self.assertTrue(atlas_one._parse_trade_journal_percent(rows[0]["Profit/Loss (%)"]) > 0)
+
+    def test_process_paper_trades_returns_updated_performance_statistics(self):
+        opening_data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.8,
+                "price_change_percentage_24h_in_currency": 5.0,
+                "price_change_percentage_7d_in_currency": 5.0,
+                "rsi_14": 55.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 72,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.8},
+                        "1h": {"trend": "Bullish", "change_percent": 1.4},
+                        "4h": {"trend": "Bullish", "change_percent": 3.2},
+                    },
+                },
+            }
+        ]
+        closing_data = [{"id": "bitcoin", "current_price": 56000}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            first_result = atlas_one.process_paper_trades(
+                opening_data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+            )
+            second_result = atlas_one.process_paper_trades(
+                closing_data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 16, 30, 0),
+            )
+
+        self.assertTrue(first_result["opened_trade"])
+        self.assertEqual(first_result["closed_trades"], 0)
+        self.assertEqual(second_result["closed_trades"], 1)
+        self.assertEqual(second_result["performance_statistics"]["total_trades"], 1)
+        self.assertEqual(second_result["performance_statistics"]["winning_trades"], 1)
+        self.assertGreater(second_result["performance_statistics"]["cumulative_profit_loss"], 0.0)
+
     def test_performance_statistics_individual_metrics(self):
         trade_rows = [
             {"Profit/Loss (£)": "£125.00", "Profit/Loss (%)": "5.00%"},
@@ -1109,11 +1255,13 @@ class OpportunityScoreTests(unittest.TestCase):
             "Suggested Action": "BUY",
             "Confidence": "85%",
             "Current Price": "£50,000.00",
+            "Entry Price": "£50,000.00",
             "Entry Zone": "£48,500.00 - £49,500.00",
             "Stop Loss": "£47,000.00",
             "Take Profit 1": "£52,500.00",
             "Take Profit 2": "£55,000.00",
             "Risk/Reward Ratio": "1.50",
+            "Position Size": "4.00",
             "Risk Level": "Medium",
             "Trend": "Bullish",
             "RSI": "58.0 (Neutral)",
