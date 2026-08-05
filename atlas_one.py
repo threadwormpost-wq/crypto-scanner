@@ -1802,6 +1802,147 @@ def _build_strategy_scorecard(context: dict) -> tuple[list[str], int, str]:
     return scorecard_lines, strategy_score, recommendation_rationale
 
 
+def load_trade_journal_rows(journal_path: str = TRADE_JOURNAL_FILE) -> List[dict]:
+    """Load trade journal rows from CSV, returning an empty list when unavailable."""
+    if not os.path.exists(journal_path) or os.path.getsize(journal_path) == 0:
+        return []
+
+    with open(journal_path, "r", newline="", encoding="utf-8") as file_obj:
+        return list(csv.DictReader(file_obj))
+
+
+def _parse_trade_journal_currency(value: object) -> float:
+    """Parse currency strings like '£1,234.56' or '-£120.00' into floats."""
+    if value is None:
+        return 0.0
+
+    raw = str(value).strip()
+    if not raw:
+        return 0.0
+
+    negative_by_parentheses = raw.startswith("(") and raw.endswith(")")
+    if negative_by_parentheses:
+        raw = raw[1:-1]
+
+    normalized = raw.replace("£", "").replace(",", "").replace(" ", "")
+    try:
+        parsed_value = float(normalized)
+    except ValueError:
+        return 0.0
+
+    if negative_by_parentheses:
+        return -abs(parsed_value)
+    return parsed_value
+
+
+def _parse_trade_journal_percent(value: object) -> float:
+    """Parse percent strings like '2.75%' into floats."""
+    if value is None:
+        return 0.0
+
+    raw = str(value).strip()
+    if not raw:
+        return 0.0
+
+    normalized = raw.replace("%", "").replace(",", "").replace(" ", "")
+    try:
+        return float(normalized)
+    except ValueError:
+        return 0.0
+
+
+def _extract_trade_profit_values(trade_rows: List[dict]) -> List[float]:
+    """Return normalized Profit/Loss (£) values from journal rows."""
+    return [_parse_trade_journal_currency(row.get("Profit/Loss (£)")) for row in trade_rows]
+
+
+def _extract_trade_return_values(trade_rows: List[dict]) -> List[float]:
+    """Return normalized Profit/Loss (%) values from journal rows."""
+    return [_parse_trade_journal_percent(row.get("Profit/Loss (%)")) for row in trade_rows]
+
+
+def calculate_total_trades(trade_rows: List[dict]) -> int:
+    """Return the total number of journaled trades."""
+    return len(trade_rows)
+
+
+def calculate_winning_trades(trade_rows: List[dict]) -> int:
+    """Return the number of trades with positive Profit/Loss (£)."""
+    profits = _extract_trade_profit_values(trade_rows)
+    return sum(1 for value in profits if value > 0)
+
+
+def calculate_losing_trades(trade_rows: List[dict]) -> int:
+    """Return the number of trades with negative Profit/Loss (£)."""
+    profits = _extract_trade_profit_values(trade_rows)
+    return sum(1 for value in profits if value < 0)
+
+
+def calculate_win_rate(trade_rows: List[dict]) -> float:
+    """Return win rate as a percentage using only winning and losing trades."""
+    winning_trades = calculate_winning_trades(trade_rows)
+    losing_trades = calculate_losing_trades(trade_rows)
+    closed_trades = winning_trades + losing_trades
+    if closed_trades == 0:
+        return 0.0
+    return (winning_trades / closed_trades) * 100
+
+
+def calculate_average_return(trade_rows: List[dict]) -> float:
+    """Return average Profit/Loss (%) across all journal rows."""
+    returns = _extract_trade_return_values(trade_rows)
+    if not returns:
+        return 0.0
+    return sum(returns) / len(returns)
+
+
+def calculate_best_trade(trade_rows: List[dict]) -> float:
+    """Return the best single-trade Profit/Loss (£)."""
+    profits = _extract_trade_profit_values(trade_rows)
+    if not profits:
+        return 0.0
+    return max(profits)
+
+
+def calculate_worst_trade(trade_rows: List[dict]) -> float:
+    """Return the worst single-trade Profit/Loss (£)."""
+    profits = _extract_trade_profit_values(trade_rows)
+    if not profits:
+        return 0.0
+    return min(profits)
+
+
+def calculate_cumulative_profit_loss(trade_rows: List[dict]) -> float:
+    """Return the cumulative Profit/Loss (£) over all journal rows."""
+    profits = _extract_trade_profit_values(trade_rows)
+    return sum(profits)
+
+
+def calculate_profit_factor(trade_rows: List[dict]) -> float:
+    """Return profit factor = gross profit / absolute gross loss."""
+    profits = _extract_trade_profit_values(trade_rows)
+    gross_profit = sum(value for value in profits if value > 0)
+    gross_loss = sum(value for value in profits if value < 0)
+    if gross_loss == 0:
+        return float("inf") if gross_profit > 0 else 0.0
+    return gross_profit / abs(gross_loss)
+
+
+def calculate_performance_statistics(trade_rows: List[dict]) -> dict:
+    """Build a complete statistics snapshot from trade journal rows."""
+    return {
+        "total_trades": calculate_total_trades(trade_rows),
+        "winning_trades": calculate_winning_trades(trade_rows),
+        "losing_trades": calculate_losing_trades(trade_rows),
+        "win_rate": calculate_win_rate(trade_rows),
+        "average_return": calculate_average_return(trade_rows),
+        "best_trade": calculate_best_trade(trade_rows),
+        "worst_trade": calculate_worst_trade(trade_rows),
+        "cumulative_profit_loss": calculate_cumulative_profit_loss(trade_rows),
+        "profit_factor": calculate_profit_factor(trade_rows),
+    }
+
+
 def _ensure_trade_journal_schema(journal_path: str) -> bool:
     """Ensure the journal CSV exists with the latest headers; migrate older headers when needed."""
     if not os.path.exists(journal_path) or os.path.getsize(journal_path) == 0:

@@ -1054,6 +1054,94 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["Trade Status"], "")
         self.assertEqual(rows[0]["Exit Reason"], "")
 
+    def test_performance_statistics_individual_metrics(self):
+        trade_rows = [
+            {"Profit/Loss (£)": "£125.00", "Profit/Loss (%)": "5.00%"},
+            {"Profit/Loss (£)": "-£50.00", "Profit/Loss (%)": "-2.00%"},
+            {"Profit/Loss (£)": "£75.00", "Profit/Loss (%)": "3.00%"},
+            {"Profit/Loss (£)": "£0.00", "Profit/Loss (%)": "0.00%"},
+        ]
+
+        self.assertEqual(atlas_one.calculate_total_trades(trade_rows), 4)
+        self.assertEqual(atlas_one.calculate_winning_trades(trade_rows), 2)
+        self.assertEqual(atlas_one.calculate_losing_trades(trade_rows), 1)
+        self.assertAlmostEqual(atlas_one.calculate_win_rate(trade_rows), 66.6666666667, places=6)
+        self.assertAlmostEqual(atlas_one.calculate_average_return(trade_rows), 1.5)
+        self.assertAlmostEqual(atlas_one.calculate_best_trade(trade_rows), 125.0)
+        self.assertAlmostEqual(atlas_one.calculate_worst_trade(trade_rows), -50.0)
+        self.assertAlmostEqual(atlas_one.calculate_cumulative_profit_loss(trade_rows), 150.0)
+        self.assertAlmostEqual(atlas_one.calculate_profit_factor(trade_rows), 4.0)
+
+    def test_performance_statistics_aggregate_snapshot(self):
+        trade_rows = [
+            {"Profit/Loss (£)": "£120.00", "Profit/Loss (%)": "6.00%"},
+            {"Profit/Loss (£)": "£80.00", "Profit/Loss (%)": "4.00%"},
+            {"Profit/Loss (£)": "-£50.00", "Profit/Loss (%)": "-2.00%"},
+        ]
+
+        stats = atlas_one.calculate_performance_statistics(trade_rows)
+
+        self.assertEqual(stats["total_trades"], 3)
+        self.assertEqual(stats["winning_trades"], 2)
+        self.assertEqual(stats["losing_trades"], 1)
+        self.assertAlmostEqual(stats["win_rate"], 66.6666666667, places=6)
+        self.assertAlmostEqual(stats["average_return"], 8 / 3, places=6)
+        self.assertAlmostEqual(stats["best_trade"], 120.0)
+        self.assertAlmostEqual(stats["worst_trade"], -50.0)
+        self.assertAlmostEqual(stats["cumulative_profit_loss"], 150.0)
+        self.assertAlmostEqual(stats["profit_factor"], 4.0)
+
+    def test_performance_statistics_handles_zero_loss_profit_factor(self):
+        trade_rows = [
+            {"Profit/Loss (£)": "£30.00", "Profit/Loss (%)": "1.00%"},
+            {"Profit/Loss (£)": "£20.00", "Profit/Loss (%)": "2.00%"},
+        ]
+
+        self.assertEqual(atlas_one.calculate_losing_trades(trade_rows), 0)
+        self.assertEqual(atlas_one.calculate_profit_factor(trade_rows), float("inf"))
+
+    def test_load_trade_journal_rows_returns_csv_rows(self):
+        sample_row = {
+            "Date/Time": "2026-08-05 10:30:00",
+            "Coin": "Bitcoin",
+            "Opportunity Score": "80",
+            "Strategy Score": "72",
+            "Suggested Action": "BUY",
+            "Confidence": "85%",
+            "Current Price": "£50,000.00",
+            "Entry Zone": "£48,500.00 - £49,500.00",
+            "Stop Loss": "£47,000.00",
+            "Take Profit 1": "£52,500.00",
+            "Take Profit 2": "£55,000.00",
+            "Risk/Reward Ratio": "1.50",
+            "Risk Level": "Medium",
+            "Trend": "Bullish",
+            "RSI": "58.0 (Neutral)",
+            "Volume": "High",
+            "Recommendation Rationale": "Sample rationale",
+            "Trade Status": "Closed",
+            "Exit Price": "£52,500.00",
+            "Exit Time": "2026-08-05 14:30:00",
+            "Exit Reason": "Take Profit 1",
+            "Profit/Loss (£)": "£250.00",
+            "Profit/Loss (%)": "5.00%",
+            "Trade Duration": "4h",
+            "Notes": "Sample note",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            with open(journal_path, "w", newline="", encoding="utf-8") as file_obj:
+                writer = csv.DictWriter(file_obj, fieldnames=atlas_one.TRADE_JOURNAL_HEADERS)
+                writer.writeheader()
+                writer.writerow(sample_row)
+
+            loaded_rows = atlas_one.load_trade_journal_rows(journal_path)
+
+        self.assertEqual(len(loaded_rows), 1)
+        self.assertEqual(loaded_rows[0]["Coin"], "Bitcoin")
+        self.assertEqual(loaded_rows[0]["Profit/Loss (£)"], "£250.00")
+
     def test_trend_classification(self):
         bullish = {
             "price_change_percentage_24h_in_currency": 3.5,
