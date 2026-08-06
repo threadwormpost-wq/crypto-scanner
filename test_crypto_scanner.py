@@ -857,7 +857,9 @@ class OpportunityScoreTests(unittest.TestCase):
             "closed_trade_count": 1,
         }
 
-        with patch("atlas_one.calculate_portfolio_snapshot", return_value=snapshot):
+        with patch("atlas_one.load_trade_journal_rows", return_value=[]), patch(
+            "atlas_one.calculate_portfolio_snapshot", return_value=snapshot
+        ):
             dashboard = atlas_one.build_portfolio_dashboard(data=[])
 
         self.assertIn("PORTFOLIO DASHBOARD", dashboard)
@@ -868,6 +870,68 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIn("Realised P/L: £120.25", dashboard)
         self.assertIn("Unrealised P/L: £60.50", dashboard)
         self.assertIn("Open Positions: 2", dashboard)
+        self.assertIn("No open paper positions.", dashboard)
+
+    def test_build_portfolio_dashboard_displays_open_positions_table(self):
+        snapshot = {
+            "starting_balance": 10000.0,
+            "available_cash": 9000.0,
+            "invested_capital": 1000.0,
+            "current_portfolio_value": 1200.0,
+            "total_equity": 10200.0,
+            "realized_profit_loss": 0.0,
+            "unrealized_profit_loss": 200.0,
+            "open_trade_count": 1,
+            "closed_trade_count": 0,
+        }
+        trade_rows = [
+            {
+                "Coin": "Bitcoin",
+                "Trade Status": "Open",
+                "Position Size": "2.0",
+                "Entry Price": "£100.00",
+            }
+        ]
+        market_data = [{"id": "bitcoin", "current_price": 150.0}]
+
+        with patch("atlas_one.load_trade_journal_rows", return_value=trade_rows), patch(
+            "atlas_one.calculate_portfolio_snapshot", return_value=snapshot
+        ), patch("atlas_one.get_usd_to_gbp_rate", return_value=1.0):
+            dashboard = atlas_one.build_portfolio_dashboard(data=market_data)
+
+        self.assertIn("Open Positions", dashboard)
+        self.assertIn("Coin", dashboard)
+        self.assertIn("Quantity", dashboard)
+        self.assertIn("Entry Price", dashboard)
+        self.assertIn("Current Price", dashboard)
+        self.assertIn("Unrealised P/L", dashboard)
+        self.assertIn("Bitcoin", dashboard)
+        self.assertIn("2.00000000", dashboard)
+        self.assertIn("£100.00", dashboard)
+        self.assertIn("£150.00", dashboard)
+        self.assertIn("£100.00", dashboard)
+        self.assertNotIn("No open paper positions.", dashboard)
+
+    def test_build_portfolio_dashboard_shows_no_open_positions_message(self):
+        snapshot = {
+            "starting_balance": 10000.0,
+            "available_cash": 10000.0,
+            "invested_capital": 0.0,
+            "current_portfolio_value": 0.0,
+            "total_equity": 10000.0,
+            "realized_profit_loss": 0.0,
+            "unrealized_profit_loss": 0.0,
+            "open_trade_count": 0,
+            "closed_trade_count": 0,
+        }
+
+        with patch("atlas_one.load_trade_journal_rows", return_value=[]), patch(
+            "atlas_one.calculate_portfolio_snapshot", return_value=snapshot
+        ):
+            dashboard = atlas_one.build_portfolio_dashboard(data=[])
+
+        self.assertIn("Open Positions", dashboard)
+        self.assertIn("No open paper positions.", dashboard)
 
     def test_trade_journal_is_created_with_expected_headers(self):
         data = [

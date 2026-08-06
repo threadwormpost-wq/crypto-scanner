@@ -2493,17 +2493,69 @@ def build_position_size_calculator(data: List[dict]) -> str:
     )
 
 
+def _format_open_positions_dashboard_table(data: List[dict], trade_rows: List[dict]) -> str:
+    """Build a display-only open positions table for the portfolio dashboard."""
+    open_rows = [row for row in trade_rows if _trade_status_is_open(row.get("Trade Status"))]
+    if not open_rows:
+        return "No open paper positions."
+
+    gbp_rate = get_usd_to_gbp_rate()
+    display_rows: List[List[str]] = []
+    for row in open_rows:
+        quantity = _parse_trade_journal_units(row.get("Position Size"))
+        if quantity <= 0:
+            continue
+
+        coin_name = str(row.get("Coin") or "Unknown")
+        entry_price = _get_entry_price_from_trade_row(row)
+        market_entry = _find_market_entry_by_coin_name(data, coin_name)
+        current_price = entry_price
+        if market_entry is not None:
+            current_price = _get_current_price(market_entry) * gbp_rate
+
+        unrealized_profit_loss = (current_price - entry_price) * quantity
+        display_rows.append(
+            [
+                coin_name,
+                f"{quantity:,.8f}",
+                format_gbp_currency(entry_price),
+                format_gbp_currency(current_price),
+                format_gbp_currency(unrealized_profit_loss),
+            ]
+        )
+
+    if not display_rows:
+        return "No open paper positions."
+
+    headers = ["Coin", "Quantity", "Entry Price", "Current Price", "Unrealised P/L"]
+    widths = [len(header) for header in headers]
+    for values in display_rows:
+        for index, value in enumerate(values):
+            widths[index] = max(widths[index], len(value))
+
+    def _format_row(values: List[str]) -> str:
+        return " | ".join(value.ljust(widths[index]) for index, value in enumerate(values))
+
+    divider = "-+-".join("-" * width for width in widths)
+    lines = [_format_row(headers), divider]
+    lines.extend(_format_row(values) for values in display_rows)
+    return "\n".join(lines)
+
+
 def build_portfolio_dashboard(
     data: List[dict],
     journal_path: str = TRADE_JOURNAL_FILE,
     starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
 ) -> str:
     """Return the virtual portfolio dashboard using persisted paper-trade state."""
+    trade_rows = load_trade_journal_rows(journal_path)
     snapshot = calculate_portfolio_snapshot(
         data=data,
+        trade_rows=trade_rows,
         journal_path=journal_path,
         starting_balance=starting_balance,
     )
+    open_positions_table = _format_open_positions_dashboard_table(data, trade_rows)
 
     return "\n".join(
         [
@@ -2515,6 +2567,10 @@ def build_portfolio_dashboard(
             f"Realised P/L: {format_gbp_currency(snapshot['realized_profit_loss'])}",
             f"Unrealised P/L: {format_gbp_currency(snapshot['unrealized_profit_loss'])}",
             f"Open Positions: {int(snapshot['open_trade_count'])}",
+            "",
+            "Open Positions",
+            "--------------",
+            open_positions_table,
         ]
     )
 
