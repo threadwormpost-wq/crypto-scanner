@@ -797,6 +797,7 @@ class OpportunityScoreTests(unittest.TestCase):
 
         mock_console = unittest.mock.Mock()
         sentinel_table = object()
+        sentinel_dashboard = "portfolio dashboard"
         sentinel_analysis = "analysis"
         sentinel_trade_plan = "trade plan"
         sentinel_position_size = "position size"
@@ -811,6 +812,9 @@ class OpportunityScoreTests(unittest.TestCase):
             "atlas_one.enrich_market_data_with_indicators",
             side_effect=[initial_enriched, final_enriched],
         ) as mock_enrich, patch(
+            "atlas_one.build_portfolio_dashboard",
+            return_value=sentinel_dashboard,
+        ), patch(
             "atlas_one.build_top_opportunity_analysis",
             return_value=sentinel_analysis,
         ), patch(
@@ -832,11 +836,38 @@ class OpportunityScoreTests(unittest.TestCase):
         mock_build_table.assert_called_once_with(initial_enriched)
         printed_values = [call_args.args[0] for call_args in mock_console.print.call_args_list if call_args.args]
         self.assertEqual(printed_values.count(sentinel_table), 1)
+        dashboard_index = printed_values.index(sentinel_dashboard)
         top_index = printed_values.index("[bold cyan]TOP OPPORTUNITIES[/bold cyan]")
+        self.assertLess(dashboard_index, top_index)
         self.assertEqual(printed_values[top_index + 1], sentinel_table)
         self.assertEqual(printed_values[top_index + 2], sentinel_analysis)
         self.assertEqual(printed_values[top_index + 3], sentinel_trade_plan)
         self.assertEqual(printed_values[top_index + 4], sentinel_position_size)
+
+    def test_build_portfolio_dashboard_displays_required_metrics(self):
+        snapshot = {
+            "starting_balance": 10000.0,
+            "available_cash": 9250.5,
+            "invested_capital": 749.5,
+            "current_portfolio_value": 810.0,
+            "total_equity": 10060.5,
+            "realized_profit_loss": 120.25,
+            "unrealized_profit_loss": 60.5,
+            "open_trade_count": 2,
+            "closed_trade_count": 1,
+        }
+
+        with patch("atlas_one.calculate_portfolio_snapshot", return_value=snapshot):
+            dashboard = atlas_one.build_portfolio_dashboard(data=[])
+
+        self.assertIn("PORTFOLIO DASHBOARD", dashboard)
+        self.assertIn("Starting Balance: £10,000.00", dashboard)
+        self.assertIn("Available Cash: £9,250.50", dashboard)
+        self.assertIn("Invested Capital: £749.50", dashboard)
+        self.assertIn("Total Equity: £10,060.50", dashboard)
+        self.assertIn("Realised P/L: £120.25", dashboard)
+        self.assertIn("Unrealised P/L: £60.50", dashboard)
+        self.assertIn("Open Positions: 2", dashboard)
 
     def test_trade_journal_is_created_with_expected_headers(self):
         data = [

@@ -2493,6 +2493,32 @@ def build_position_size_calculator(data: List[dict]) -> str:
     )
 
 
+def build_portfolio_dashboard(
+    data: List[dict],
+    journal_path: str = TRADE_JOURNAL_FILE,
+    starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
+) -> str:
+    """Return the virtual portfolio dashboard using persisted paper-trade state."""
+    snapshot = calculate_portfolio_snapshot(
+        data=data,
+        journal_path=journal_path,
+        starting_balance=starting_balance,
+    )
+
+    return "\n".join(
+        [
+            "[bold cyan]🔵 INFO | PORTFOLIO DASHBOARD[/bold cyan]",
+            f"Starting Balance: {format_gbp_currency(snapshot['starting_balance'])}",
+            f"Available Cash: {format_gbp_currency(snapshot['available_cash'])}",
+            f"Invested Capital: {format_gbp_currency(snapshot['invested_capital'])}",
+            f"Total Equity: {format_gbp_currency(snapshot['total_equity'])}",
+            f"Realised P/L: {format_gbp_currency(snapshot['realized_profit_loss'])}",
+            f"Unrealised P/L: {format_gbp_currency(snapshot['unrealized_profit_loss'])}",
+            f"Open Positions: {int(snapshot['open_trade_count'])}",
+        ]
+    )
+
+
 def format_opportunity_score(score: int) -> Text:
     """Return a Rich Text object with green/yellow/red styling for opportunity score."""
     text = Text(str(score))
@@ -2752,6 +2778,8 @@ def main() -> None:
         log_request_audit(console, cache)
         return
 
+    console.print(build_portfolio_dashboard(latest_market_data))
+    console.print()
     console.print("[bold magenta]Cryptocurrency Scanner[/bold magenta]")
     console.print("[bold cyan]TOP OPPORTUNITIES[/bold cyan]")
     print_opportunities_table(console, latest_market_data)
