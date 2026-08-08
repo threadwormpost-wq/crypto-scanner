@@ -101,7 +101,13 @@ class PaperTradeManager:
 
     def should_open_trade(self, opportunity: dict) -> bool:
         """Return whether a paper trade should be opened for the opportunity."""
-        return False
+        score = opportunity.get("score") if isinstance(opportunity, dict) else None
+        if score is None:
+            return False
+        try:
+            return float(score) >= 70.0
+        except (TypeError, ValueError):
+            return False
 
 
 class CachedData:

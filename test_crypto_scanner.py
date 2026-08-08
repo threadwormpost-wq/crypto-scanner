@@ -947,10 +947,17 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIn("Open Positions", dashboard)
         self.assertIn("No open paper positions.", dashboard)
 
-    def test_paper_trade_manager_blocks_trade_by_default(self):
+    def test_paper_trade_manager_returns_false_for_score_69(self):
         manager = atlas_one.PaperTradeManager()
+        self.assertFalse(manager.should_open_trade({"coin_id": "bitcoin", "score": 69}))
 
-        self.assertFalse(manager.should_open_trade({"coin_id": "bitcoin", "score": 99}))
+    def test_paper_trade_manager_returns_true_for_score_70(self):
+        manager = atlas_one.PaperTradeManager()
+        self.assertTrue(manager.should_open_trade({"coin_id": "bitcoin", "score": 70}))
+
+    def test_paper_trade_manager_returns_true_for_score_95(self):
+        manager = atlas_one.PaperTradeManager()
+        self.assertTrue(manager.should_open_trade({"coin_id": "bitcoin", "score": 95}))
 
     def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
         data = [
