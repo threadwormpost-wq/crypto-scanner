@@ -2665,8 +2665,21 @@ def process_paper_trades(
     starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
     position_size_pct: float = DEFAULT_PAPER_POSITION_SIZE_PCT,
     paper_trade_manager: PaperTradeManager | None = None,
+    paper_trade_engine: PaperTradeEngine | None = None,
 ) -> dict:
     """Advance the paper-trading engine for a scan by closing then opening trades."""
+    engine = paper_trade_engine or PaperTradeEngine(paper_trade_manager=paper_trade_manager)
+    ranked_opportunities = _build_ranked_opportunities_for_trade_decision(data)
+    portfolio_snapshot_before = calculate_portfolio_snapshot(
+        data=data,
+        journal_path=journal_path,
+        starting_balance=starting_balance,
+    )
+    paper_trade_engine_summary = engine.process_latest_opportunities(
+        ranked_opportunities,
+        available_cash=portfolio_snapshot_before.get("available_cash", 0.0),
+    )
+
     closed_trades = update_open_paper_trades(data, journal_path=journal_path, timestamp=timestamp)
     opened_trade = record_trade_journal_entry(
         data,
@@ -2681,6 +2694,7 @@ def process_paper_trades(
     return {
         "opened_trade": opened_trade,
         "closed_trades": closed_trades,
+        "paper_trade_engine_summary": paper_trade_engine_summary,
         "performance_statistics": calculate_performance_statistics(trade_rows),
         "portfolio_snapshot": calculate_portfolio_snapshot(
             data=data,
@@ -3116,6 +3130,7 @@ def main() -> None:
 
     # Initialize the shared cache for both market data and historical prices
     cache = RateLimitedCache()
+    paper_trade_engine = PaperTradeEngine()
     latest_market_data: List[dict] = []
     scan_journal_entries: set[tuple] = set()
     
@@ -3136,7 +3151,11 @@ def main() -> None:
     console.print()
     console.print(build_top_opportunity_analysis(latest_market_data))
     try:
-        process_paper_trades(latest_market_data, seen_entries=scan_journal_entries)
+        process_paper_trades(
+            latest_market_data,
+            seen_entries=scan_journal_entries,
+            paper_trade_engine=paper_trade_engine,
+        )
     except OSError as exc:
         logger.warning("Could not write trade journal entry: %s", exc)
     console.print()
@@ -3168,7 +3187,11 @@ def main() -> None:
                 try:
                     # Enrich with indicators (reuses cached historical/intraday prices when available).
                     latest_market_data = enrich_market_data_with_indicators(market_data, cache=cache)
-                    process_paper_trades(latest_market_data, seen_entries=scan_journal_entries)
+                    process_paper_trades(
+                        latest_market_data,
+                        seen_entries=scan_journal_entries,
+                        paper_trade_engine=paper_trade_engine,
+                    )
                 except requests.RequestException as exc:
                     console.print(f"[bold red]Could not fetch data: {exc}[/bold red]")
                     if not latest_market_data:

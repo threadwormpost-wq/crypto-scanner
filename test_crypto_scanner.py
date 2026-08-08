@@ -17,6 +17,24 @@ class AllowAllPaperTradeManager:
     def should_open_trade(self, opportunity):
         return True
 
+    def calculate_position_size(self, opportunity, available_cash):
+        return min(100.0, float(available_cash or 0.0))
+
+    def calculate_trade_levels(self, opportunity):
+        current_price = opportunity.get("current_price")
+        if current_price is None:
+            return None
+        entry_price = float(current_price)
+        return {
+            "entry_price": entry_price,
+            "stop_loss": entry_price * 0.97,
+            "take_profit": entry_price * 1.06,
+            "risk_reward_ratio": 2.0,
+        }
+
+    def update_open_position(self, position, current_price):
+        return {"action": "HOLD", "status": "HOLD", "closed": False, "exit_price": None, "realised_pnl": 0.0}
+
 
 class RecordingPaperTradeManager:
     def __init__(self):
@@ -65,6 +83,15 @@ class AlwaysOpenPaperTradeManager:
                 "exit_price": float(position.get("take_profit")),
                 "realised_pnl": (float(position.get("take_profit")) - float(position.get("entry_price"))) * float(position.get("position_size")),
             }
+        return {"action": "HOLD", "status": "HOLD", "closed": False, "exit_price": None, "realised_pnl": 0.0}
+
+
+class TrackingUpdatePaperTradeManager(AlwaysOpenPaperTradeManager):
+    def __init__(self):
+        self.update_calls = []
+
+    def update_open_position(self, position, current_price):
+        self.update_calls.append((position.get("coin_id"), current_price))
         return {"action": "HOLD", "status": "HOLD", "closed": False, "exit_price": None, "realised_pnl": 0.0}
 
 
@@ -1194,6 +1221,97 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIn("new_trades_opened", summary)
         self.assertIn("trades_closed", summary)
         self.assertIn("trades_still_open", summary)
+
+    def test_process_paper_trades_engine_summary_no_opportunities(self):
+        engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            result = atlas_one.process_paper_trades(
+                [],
+                journal_path=journal_path,
+                seen_entries=set(),
+                paper_trade_engine=engine,
+            )
+
+        summary = result["paper_trade_engine_summary"]
+        self.assertEqual(summary["new_trades_opened"], [])
+        self.assertEqual(summary["trades_closed"], [])
+        self.assertEqual(summary["trades_still_open"], [])
+
+    def test_process_paper_trades_engine_summary_one_qualifying_opportunity(self):
+        engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
+        data = [{"id": "bitcoin", "current_price": 50000}]
+        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            with patch("atlas_one._build_ranked_opportunities_for_trade_decision", return_value=ranked), patch(
+                "atlas_one.record_trade_journal_entry", return_value=False
+            ):
+                result = atlas_one.process_paper_trades(
+                    data,
+                    journal_path=journal_path,
+                    seen_entries=set(),
+                    paper_trade_engine=engine,
+                )
+
+        summary = result["paper_trade_engine_summary"]
+        self.assertEqual(len(summary["new_trades_opened"]), 1)
+        self.assertEqual(len(summary["trades_still_open"]), 1)
+
+    def test_process_paper_trades_engine_summary_duplicate_opportunity_ignored(self):
+        engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
+        data = [{"id": "bitcoin", "current_price": 50000}]
+        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            with patch("atlas_one._build_ranked_opportunities_for_trade_decision", return_value=ranked), patch(
+                "atlas_one.record_trade_journal_entry", return_value=False
+            ):
+                first = atlas_one.process_paper_trades(
+                    data,
+                    journal_path=journal_path,
+                    seen_entries=set(),
+                    paper_trade_engine=engine,
+                )
+                second = atlas_one.process_paper_trades(
+                    data,
+                    journal_path=journal_path,
+                    seen_entries=set(),
+                    paper_trade_engine=engine,
+                )
+
+        self.assertEqual(len(first["paper_trade_engine_summary"]["new_trades_opened"]), 1)
+        self.assertEqual(len(second["paper_trade_engine_summary"]["new_trades_opened"]), 0)
+        self.assertEqual(len(second["paper_trade_engine_summary"]["trades_still_open"]), 1)
+
+    def test_process_paper_trades_engine_summary_existing_open_position_updated(self):
+        tracking_manager = TrackingUpdatePaperTradeManager()
+        engine = atlas_one.PaperTradeEngine(paper_trade_manager=tracking_manager)
+        data = [{"id": "bitcoin", "current_price": 50000}]
+        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            with patch("atlas_one._build_ranked_opportunities_for_trade_decision", return_value=ranked), patch(
+                "atlas_one.record_trade_journal_entry", return_value=False
+            ):
+                atlas_one.process_paper_trades(
+                    data,
+                    journal_path=journal_path,
+                    seen_entries=set(),
+                    paper_trade_engine=engine,
+                )
+                atlas_one.process_paper_trades(
+                    data,
+                    journal_path=journal_path,
+                    seen_entries=set(),
+                    paper_trade_engine=engine,
+                )
+
+        self.assertGreaterEqual(len(tracking_manager.update_calls), 1)
 
     def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
         data = [
