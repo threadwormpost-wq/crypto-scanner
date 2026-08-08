@@ -1559,7 +1559,7 @@ class OpportunityScoreTests(unittest.TestCase):
     def test_process_paper_trades_engine_summary_one_qualifying_opportunity(self):
         engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
         data = [{"id": "bitcoin", "current_price": 50000}]
-        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0}]
+        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0, "suggested_action": "BUY"}]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             journal_path = os.path.join(temp_dir, "trade_journal.csv")
@@ -1580,7 +1580,7 @@ class OpportunityScoreTests(unittest.TestCase):
     def test_process_paper_trades_engine_summary_duplicate_opportunity_ignored(self):
         engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
         data = [{"id": "bitcoin", "current_price": 50000}]
-        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0}]
+        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0, "suggested_action": "BUY"}]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             journal_path = os.path.join(temp_dir, "trade_journal.csv")
@@ -1608,7 +1608,7 @@ class OpportunityScoreTests(unittest.TestCase):
         tracking_manager = TrackingUpdatePaperTradeManager()
         engine = atlas_one.PaperTradeEngine(paper_trade_manager=tracking_manager)
         data = [{"id": "bitcoin", "current_price": 50000}]
-        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0}]
+        ranked = [{"coin_id": "bitcoin", "score": 80, "current_price": 50000.0, "suggested_action": "BUY"}]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             journal_path = os.path.join(temp_dir, "trade_journal.csv")
@@ -1629,6 +1629,27 @@ class OpportunityScoreTests(unittest.TestCase):
                 )
 
         self.assertGreaterEqual(len(tracking_manager.update_calls), 1)
+
+    def test_process_paper_trades_engine_summary_does_not_open_for_non_buy_signal(self):
+        engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
+        data = [{"id": "bitcoin", "current_price": 50000}]
+        ranked = [{"coin_id": "bitcoin", "score": 95, "current_price": 50000.0, "suggested_action": "WATCH"}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            with patch("atlas_one._build_ranked_opportunities_for_trade_decision", return_value=ranked), patch(
+                "atlas_one.record_trade_journal_entry", return_value=False
+            ):
+                result = atlas_one.process_paper_trades(
+                    data,
+                    journal_path=journal_path,
+                    seen_entries=set(),
+                    paper_trade_engine=engine,
+                )
+
+        summary = result["paper_trade_engine_summary"]
+        self.assertEqual(summary["new_trades_opened"], [])
+        self.assertEqual(summary["trades_still_open"], [])
 
     def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
         data = [

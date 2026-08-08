@@ -2798,13 +2798,18 @@ def process_paper_trades(
     """Advance the paper-trading engine for a scan by closing then opening trades."""
     engine = paper_trade_engine or PaperTradeEngine(paper_trade_manager=paper_trade_manager)
     ranked_opportunities = _build_ranked_opportunities_for_trade_decision(data)
+    buy_ranked_opportunities = [
+        opportunity
+        for opportunity in ranked_opportunities
+        if str(opportunity.get("suggested_action") or "").upper() == "BUY"
+    ]
     portfolio_snapshot_before = calculate_portfolio_snapshot(
         data=data,
         journal_path=journal_path,
         starting_balance=starting_balance,
     )
     paper_trade_engine_summary = engine.process_latest_opportunities(
-        ranked_opportunities,
+        buy_ranked_opportunities,
         available_cash=portfolio_snapshot_before.get("available_cash", 0.0),
     )
 
