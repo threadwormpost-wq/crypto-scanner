@@ -314,6 +314,73 @@ class PaperTradeEngine:
         }
 
 
+class PaperTradeStatistics:
+    """Compute paper-trading statistics from engine state and closed-trade history."""
+
+    @staticmethod
+    def _parse_realised_pnl(trade: dict) -> float:
+        """Return a normalized realised P/L value from a closed-trade record."""
+        try:
+            return float(trade.get("realised_pnl") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            return 0.0
+
+    @staticmethod
+    def _sum_allocated_cash(open_positions: List[dict]) -> float:
+        """Return total cash still allocated across open positions."""
+        total = 0.0
+        for position in open_positions:
+            if not isinstance(position, dict):
+                continue
+            try:
+                total += max(0.0, float(position.get("allocated_cash") or 0.0))
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    def calculate(
+        self,
+        paper_trade_engine: PaperTradeEngine,
+        closed_trades: List[dict] | None = None,
+        starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
+    ) -> dict:
+        """Return a structured statistics snapshot from paper-trading state."""
+        open_positions = list(getattr(paper_trade_engine, "open_positions", []) or [])
+        closed_trade_rows = [trade for trade in (closed_trades or []) if isinstance(trade, dict)]
+
+        open_trades = len(open_positions)
+        closed_count = len(closed_trade_rows)
+        total_trades = open_trades + closed_count
+
+        realised_pnls = [self._parse_realised_pnl(trade) for trade in closed_trade_rows]
+        winning_trades = sum(1 for pnl in realised_pnls if pnl > 0)
+        losing_trades = sum(1 for pnl in realised_pnls if pnl < 0)
+        win_rate = (winning_trades / closed_count * 100.0) if closed_count > 0 else 0.0
+
+        total_realised_pnl = sum(realised_pnls)
+        average_realised_pnl = (total_realised_pnl / closed_count) if closed_count > 0 else 0.0
+        best_trade = max(realised_pnls) if realised_pnls else 0.0
+        worst_trade = min(realised_pnls) if realised_pnls else 0.0
+
+        normalized_starting_balance = max(0.0, float(starting_balance))
+        allocated_cash = self._sum_allocated_cash(open_positions)
+        current_account_balance = normalized_starting_balance - allocated_cash + total_realised_pnl
+
+        return {
+            "total_trades": total_trades,
+            "open_trades": open_trades,
+            "closed_trades": closed_count,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "win_rate": win_rate,
+            "total_realised_pnl": total_realised_pnl,
+            "average_realised_pnl": average_realised_pnl,
+            "best_trade": best_trade,
+            "worst_trade": worst_trade,
+            "current_account_balance": current_account_balance,
+        }
+
+
 class CachedData:
     """Store data with expiration timestamp."""
     def __init__(self, data, ttl_seconds: int):

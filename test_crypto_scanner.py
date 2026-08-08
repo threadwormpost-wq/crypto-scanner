@@ -1222,6 +1222,122 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIn("trades_closed", summary)
         self.assertIn("trades_still_open", summary)
 
+    def test_paper_trade_statistics_empty_history(self):
+        engine = atlas_one.PaperTradeEngine()
+        stats = atlas_one.PaperTradeStatistics().calculate(
+            paper_trade_engine=engine,
+            closed_trades=[],
+            starting_balance=10_000.0,
+        )
+
+        self.assertEqual(stats["total_trades"], 0)
+        self.assertEqual(stats["open_trades"], 0)
+        self.assertEqual(stats["closed_trades"], 0)
+        self.assertEqual(stats["winning_trades"], 0)
+        self.assertEqual(stats["losing_trades"], 0)
+        self.assertEqual(stats["win_rate"], 0.0)
+        self.assertEqual(stats["total_realised_pnl"], 0.0)
+        self.assertEqual(stats["average_realised_pnl"], 0.0)
+        self.assertEqual(stats["best_trade"], 0.0)
+        self.assertEqual(stats["worst_trade"], 0.0)
+        self.assertEqual(stats["current_account_balance"], 10_000.0)
+
+    def test_paper_trade_statistics_all_winning_trades(self):
+        engine = atlas_one.PaperTradeEngine()
+        closed_trades = [
+            {"realised_pnl": 50.0},
+            {"realised_pnl": 25.0},
+            {"realised_pnl": 75.0},
+        ]
+
+        stats = atlas_one.PaperTradeStatistics().calculate(
+            paper_trade_engine=engine,
+            closed_trades=closed_trades,
+            starting_balance=10_000.0,
+        )
+
+        self.assertEqual(stats["total_trades"], 3)
+        self.assertEqual(stats["open_trades"], 0)
+        self.assertEqual(stats["closed_trades"], 3)
+        self.assertEqual(stats["winning_trades"], 3)
+        self.assertEqual(stats["losing_trades"], 0)
+        self.assertEqual(stats["win_rate"], 100.0)
+        self.assertEqual(stats["total_realised_pnl"], 150.0)
+        self.assertEqual(stats["average_realised_pnl"], 50.0)
+        self.assertEqual(stats["best_trade"], 75.0)
+        self.assertEqual(stats["worst_trade"], 25.0)
+
+    def test_paper_trade_statistics_all_losing_trades(self):
+        engine = atlas_one.PaperTradeEngine()
+        closed_trades = [
+            {"realised_pnl": -50.0},
+            {"realised_pnl": -25.0},
+            {"realised_pnl": -75.0},
+        ]
+
+        stats = atlas_one.PaperTradeStatistics().calculate(
+            paper_trade_engine=engine,
+            closed_trades=closed_trades,
+            starting_balance=10_000.0,
+        )
+
+        self.assertEqual(stats["total_trades"], 3)
+        self.assertEqual(stats["open_trades"], 0)
+        self.assertEqual(stats["closed_trades"], 3)
+        self.assertEqual(stats["winning_trades"], 0)
+        self.assertEqual(stats["losing_trades"], 3)
+        self.assertEqual(stats["win_rate"], 0.0)
+        self.assertEqual(stats["total_realised_pnl"], -150.0)
+        self.assertEqual(stats["average_realised_pnl"], -50.0)
+        self.assertEqual(stats["best_trade"], -25.0)
+        self.assertEqual(stats["worst_trade"], -75.0)
+
+    def test_paper_trade_statistics_mixed_results(self):
+        engine = atlas_one.PaperTradeEngine()
+        closed_trades = [
+            {"realised_pnl": 120.0},
+            {"realised_pnl": -40.0},
+            {"realised_pnl": 20.0},
+            {"realised_pnl": -10.0},
+        ]
+
+        stats = atlas_one.PaperTradeStatistics().calculate(
+            paper_trade_engine=engine,
+            closed_trades=closed_trades,
+            starting_balance=10_000.0,
+        )
+
+        self.assertEqual(stats["total_trades"], 4)
+        self.assertEqual(stats["winning_trades"], 2)
+        self.assertEqual(stats["losing_trades"], 2)
+        self.assertEqual(stats["win_rate"], 50.0)
+        self.assertEqual(stats["total_realised_pnl"], 90.0)
+        self.assertAlmostEqual(stats["average_realised_pnl"], 22.5)
+        self.assertEqual(stats["best_trade"], 120.0)
+        self.assertEqual(stats["worst_trade"], -40.0)
+
+    def test_paper_trade_statistics_account_balance_calculation(self):
+        engine = atlas_one.PaperTradeEngine()
+        engine.open_positions = [
+            {"coin_id": "bitcoin", "allocated_cash": 300.0},
+            {"coin_id": "ethereum", "allocated_cash": 200.0},
+        ]
+        closed_trades = [
+            {"realised_pnl": 150.0},
+            {"realised_pnl": -50.0},
+        ]
+
+        stats = atlas_one.PaperTradeStatistics().calculate(
+            paper_trade_engine=engine,
+            closed_trades=closed_trades,
+            starting_balance=10_000.0,
+        )
+
+        self.assertEqual(stats["open_trades"], 2)
+        self.assertEqual(stats["closed_trades"], 2)
+        self.assertEqual(stats["total_trades"], 4)
+        self.assertEqual(stats["current_account_balance"], 9_600.0)
+
     def test_process_paper_trades_engine_summary_no_opportunities(self):
         engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
 
