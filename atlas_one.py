@@ -160,6 +160,59 @@ class PaperTradeManager:
             "risk_reward_ratio": risk_reward_ratio,
         }
 
+    def update_open_position(self, position: dict, current_price: float) -> dict:
+        """Update an open paper position and return HOLD or a closed result."""
+        hold_response = {
+            "action": "HOLD",
+            "status": "HOLD",
+            "closed": False,
+            "exit_price": None,
+            "realised_pnl": 0.0,
+        }
+
+        if not isinstance(position, dict):
+            return hold_response
+
+        try:
+            normalized_current_price = float(current_price)
+            entry_price = float(position.get("entry_price"))
+            stop_loss = float(position.get("stop_loss"))
+            take_profit = float(position.get("take_profit"))
+            position_size = float(position.get("position_size", 1.0))
+        except (TypeError, ValueError):
+            return hold_response
+
+        if (
+            normalized_current_price <= 0
+            or entry_price <= 0
+            or stop_loss <= 0
+            or take_profit <= 0
+            or position_size <= 0
+        ):
+            return hold_response
+
+        if normalized_current_price <= stop_loss:
+            exit_price = stop_loss
+            return {
+                "action": "CLOSE",
+                "status": "STOP_LOSS",
+                "closed": True,
+                "exit_price": exit_price,
+                "realised_pnl": (exit_price - entry_price) * position_size,
+            }
+
+        if normalized_current_price >= take_profit:
+            exit_price = take_profit
+            return {
+                "action": "CLOSE",
+                "status": "TAKE_PROFIT",
+                "closed": True,
+                "exit_price": exit_price,
+                "realised_pnl": (exit_price - entry_price) * position_size,
+            }
+
+        return hold_response
+
 
 class CachedData:
     """Store data with expiration timestamp."""

@@ -1022,6 +1022,83 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIsNone(manager.calculate_trade_levels({"coin_id": "bitcoin"}))
         self.assertIsNone(manager.calculate_trade_levels({"coin_id": "bitcoin", "current_price": "invalid"}))
 
+    def test_paper_trade_manager_update_open_position_closes_on_stop_loss(self):
+        manager = atlas_one.PaperTradeManager()
+        position = {
+            "entry_price": 100.0,
+            "stop_loss": 97.0,
+            "take_profit": 106.0,
+            "position_size": 2.0,
+        }
+
+        result = manager.update_open_position(position, current_price=96.0)
+
+        self.assertEqual(result["status"], "STOP_LOSS")
+        self.assertTrue(result["closed"])
+        self.assertEqual(result["action"], "CLOSE")
+        self.assertAlmostEqual(result["realised_pnl"], -6.0)
+
+    def test_paper_trade_manager_update_open_position_closes_on_take_profit(self):
+        manager = atlas_one.PaperTradeManager()
+        position = {
+            "entry_price": 100.0,
+            "stop_loss": 97.0,
+            "take_profit": 106.0,
+            "position_size": 2.0,
+        }
+
+        result = manager.update_open_position(position, current_price=107.0)
+
+        self.assertEqual(result["status"], "TAKE_PROFIT")
+        self.assertTrue(result["closed"])
+        self.assertEqual(result["action"], "CLOSE")
+        self.assertAlmostEqual(result["realised_pnl"], 12.0)
+
+    def test_paper_trade_manager_update_open_position_holds_between_levels(self):
+        manager = atlas_one.PaperTradeManager()
+        position = {
+            "entry_price": 100.0,
+            "stop_loss": 97.0,
+            "take_profit": 106.0,
+            "position_size": 2.0,
+        }
+
+        result = manager.update_open_position(position, current_price=101.0)
+
+        self.assertEqual(result["status"], "HOLD")
+        self.assertFalse(result["closed"])
+        self.assertEqual(result["action"], "HOLD")
+
+    def test_paper_trade_manager_update_open_position_holds_for_invalid_price(self):
+        manager = atlas_one.PaperTradeManager()
+        position = {
+            "entry_price": 100.0,
+            "stop_loss": 97.0,
+            "take_profit": 106.0,
+            "position_size": 2.0,
+        }
+
+        result = manager.update_open_position(position, current_price="invalid")
+
+        self.assertEqual(result["status"], "HOLD")
+        self.assertFalse(result["closed"])
+        self.assertEqual(result["action"], "HOLD")
+
+    def test_paper_trade_manager_update_open_position_holds_for_missing_price(self):
+        manager = atlas_one.PaperTradeManager()
+        position = {
+            "entry_price": 100.0,
+            "stop_loss": 97.0,
+            "take_profit": 106.0,
+            "position_size": 2.0,
+        }
+
+        result = manager.update_open_position(position, current_price=None)
+
+        self.assertEqual(result["status"], "HOLD")
+        self.assertFalse(result["closed"])
+        self.assertEqual(result["action"], "HOLD")
+
     def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
         data = [
             {
