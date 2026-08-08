@@ -880,9 +880,14 @@ class OpportunityScoreTests(unittest.TestCase):
         mock_console = unittest.mock.Mock()
         sentinel_table = object()
         sentinel_dashboard = "portfolio dashboard"
+        sentinel_paper_dashboard = "paper account dashboard"
         sentinel_analysis = "analysis"
         sentinel_trade_plan = "trade plan"
         sentinel_position_size = "position size"
+        trade_result = {
+            "paper_trade_engine_summary": {"trades_closed": []},
+            "portfolio_snapshot": {"available_cash": 10_000.0},
+        }
 
         with patch(
             "atlas_one.argparse.ArgumentParser.parse_args",
@@ -901,12 +906,19 @@ class OpportunityScoreTests(unittest.TestCase):
             return_value=sentinel_analysis,
         ), patch(
             "atlas_one.process_paper_trades",
+            return_value=trade_result,
         ) as mock_process_paper_trades, patch(
             "atlas_one.build_trade_plan",
             return_value=sentinel_trade_plan,
         ), patch(
             "atlas_one.build_position_size_calculator",
             return_value=sentinel_position_size,
+        ), patch(
+            "atlas_one.PaperTradeStatistics.calculate",
+            return_value={"current_account_balance": 10_000.0},
+        ) as mock_statistics_calculate, patch(
+            "atlas_one.PaperTradeDashboard.render",
+            return_value=sentinel_paper_dashboard,
         ), patch("atlas_one.build_table", return_value=sentinel_table) as mock_build_table, patch(
             "atlas_one.log_request_audit"
         ), patch("atlas_one.time.sleep"):
@@ -915,16 +927,141 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertEqual(mock_fetch_market_data.call_count, 2)
         self.assertEqual(mock_enrich.call_count, 2)
         self.assertEqual(mock_process_paper_trades.call_count, 2)
+        self.assertEqual(mock_statistics_calculate.call_count, 2)
         mock_build_table.assert_called_once_with(initial_enriched)
         printed_values = [call_args.args[0] for call_args in mock_console.print.call_args_list if call_args.args]
         self.assertEqual(printed_values.count(sentinel_table), 1)
         dashboard_index = printed_values.index(sentinel_dashboard)
         top_index = printed_values.index("[bold cyan]TOP OPPORTUNITIES[/bold cyan]")
+        paper_dashboard_index = printed_values.index(sentinel_paper_dashboard)
         self.assertLess(dashboard_index, top_index)
+        self.assertGreater(paper_dashboard_index, top_index)
         self.assertEqual(printed_values[top_index + 1], sentinel_table)
         self.assertEqual(printed_values[top_index + 2], sentinel_analysis)
         self.assertEqual(printed_values[top_index + 3], sentinel_trade_plan)
         self.assertEqual(printed_values[top_index + 4], sentinel_position_size)
+
+    def test_main_uses_shared_engine_for_paper_trade_statistics(self):
+        market_data = [{"id": "bitcoin", "current_price": 50000, "rsi_14": 55.0}]
+        trade_results = [
+            {
+                "paper_trade_engine_summary": {
+                    "trades_closed": [{"coin_id": "bitcoin", "realised_pnl": 25.0}],
+                },
+                "portfolio_snapshot": {"available_cash": 9_900.0},
+            },
+            {
+                "paper_trade_engine_summary": {
+                    "trades_closed": [{"coin_id": "ethereum", "realised_pnl": -10.0}],
+                },
+                "portfolio_snapshot": {"available_cash": 9_850.0},
+            },
+        ]
+
+        with patch(
+            "atlas_one.argparse.ArgumentParser.parse_args",
+            return_value=crypto_scanner.argparse.Namespace(refresh_interval=0, iterations=2),
+        ), patch("atlas_one.Console", return_value=unittest.mock.Mock()), patch(
+            "atlas_one.fetch_market_data",
+            side_effect=[market_data, market_data],
+        ), patch(
+            "atlas_one.enrich_market_data_with_indicators",
+            side_effect=[market_data, market_data],
+        ), patch(
+            "atlas_one.build_portfolio_dashboard",
+            return_value="portfolio",
+        ), patch(
+            "atlas_one.build_top_opportunity_analysis",
+            return_value="analysis",
+        ), patch(
+            "atlas_one.build_trade_plan",
+            return_value="trade plan",
+        ), patch(
+            "atlas_one.build_position_size_calculator",
+            return_value="position size",
+        ), patch(
+            "atlas_one.build_table",
+            return_value=object(),
+        ), patch(
+            "atlas_one.process_paper_trades",
+            side_effect=trade_results,
+        ), patch(
+            "atlas_one.PaperTradeDashboard.render",
+            return_value="paper dashboard",
+        ), patch(
+            "atlas_one.log_request_audit"
+        ), patch("atlas_one.time.sleep"), patch(
+            "atlas_one.PaperTradeStatistics.calculate",
+            return_value={"current_account_balance": 10_000.0},
+        ) as mock_statistics_calculate:
+            atlas_one.main()
+
+        self.assertEqual(mock_statistics_calculate.call_count, 2)
+        first_engine = mock_statistics_calculate.call_args_list[0].kwargs["paper_trade_engine"]
+        second_engine = mock_statistics_calculate.call_args_list[1].kwargs["paper_trade_engine"]
+        self.assertIs(first_engine, second_engine)
+
+    def test_main_accumulates_closed_trades_for_statistics_dashboard(self):
+        market_data = [{"id": "bitcoin", "current_price": 50000, "rsi_14": 55.0}]
+        trade_results = [
+            {
+                "paper_trade_engine_summary": {
+                    "trades_closed": [{"coin_id": "bitcoin", "realised_pnl": 30.0}],
+                },
+                "portfolio_snapshot": {"available_cash": 9_900.0},
+            },
+            {
+                "paper_trade_engine_summary": {
+                    "trades_closed": [{"coin_id": "ethereum", "realised_pnl": -15.0}],
+                },
+                "portfolio_snapshot": {"available_cash": 9_850.0},
+            },
+        ]
+
+        with patch(
+            "atlas_one.argparse.ArgumentParser.parse_args",
+            return_value=crypto_scanner.argparse.Namespace(refresh_interval=0, iterations=2),
+        ), patch("atlas_one.Console", return_value=unittest.mock.Mock()), patch(
+            "atlas_one.fetch_market_data",
+            side_effect=[market_data, market_data],
+        ), patch(
+            "atlas_one.enrich_market_data_with_indicators",
+            side_effect=[market_data, market_data],
+        ), patch(
+            "atlas_one.build_portfolio_dashboard",
+            return_value="portfolio",
+        ), patch(
+            "atlas_one.build_top_opportunity_analysis",
+            return_value="analysis",
+        ), patch(
+            "atlas_one.build_trade_plan",
+            return_value="trade plan",
+        ), patch(
+            "atlas_one.build_position_size_calculator",
+            return_value="position size",
+        ), patch(
+            "atlas_one.build_table",
+            return_value=object(),
+        ), patch(
+            "atlas_one.process_paper_trades",
+            side_effect=trade_results,
+        ), patch(
+            "atlas_one.PaperTradeDashboard.render",
+            return_value="paper dashboard",
+        ), patch(
+            "atlas_one.log_request_audit"
+        ), patch("atlas_one.time.sleep"), patch(
+            "atlas_one.PaperTradeStatistics.calculate",
+            return_value={"current_account_balance": 10_000.0},
+        ) as mock_statistics_calculate:
+            atlas_one.main()
+
+        first_closed_trades = mock_statistics_calculate.call_args_list[0].kwargs["closed_trades"]
+        second_closed_trades = mock_statistics_calculate.call_args_list[1].kwargs["closed_trades"]
+        self.assertEqual(len(first_closed_trades), 1)
+        self.assertEqual(len(second_closed_trades), 2)
+        self.assertEqual(second_closed_trades[0]["coin_id"], "bitcoin")
+        self.assertEqual(second_closed_trades[1]["coin_id"], "ethereum")
 
     def test_build_portfolio_dashboard_displays_required_metrics(self):
         snapshot = {

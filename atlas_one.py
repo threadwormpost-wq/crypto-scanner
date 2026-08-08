@@ -3259,8 +3259,33 @@ def main() -> None:
     # Initialize the shared cache for both market data and historical prices
     cache = RateLimitedCache()
     paper_trade_engine = PaperTradeEngine()
+    paper_trade_statistics = PaperTradeStatistics()
+    paper_trade_closed_history: List[dict] = []
     latest_market_data: List[dict] = []
     scan_journal_entries: set[tuple] = set()
+
+    def _render_latest_paper_trade_dashboard(paper_trade_result: dict | None) -> None:
+        """Render the paper account dashboard from latest engine state and closed history."""
+        result_payload = paper_trade_result if isinstance(paper_trade_result, dict) else {}
+        summary_payload = result_payload.get("paper_trade_engine_summary")
+        closed_trades = summary_payload.get("trades_closed") if isinstance(summary_payload, dict) else []
+        if isinstance(closed_trades, list):
+            paper_trade_closed_history.extend(
+                trade for trade in closed_trades if isinstance(trade, dict)
+            )
+
+        latest_statistics = paper_trade_statistics.calculate(
+            paper_trade_engine=paper_trade_engine,
+            closed_trades=list(paper_trade_closed_history),
+            starting_balance=DEFAULT_PAPER_STARTING_BALANCE,
+        )
+        portfolio_snapshot = result_payload.get("portfolio_snapshot") if isinstance(result_payload, dict) else {}
+        cash_available = portfolio_snapshot.get("available_cash") if isinstance(portfolio_snapshot, dict) else None
+        dashboard_statistics = dict(latest_statistics)
+        if cash_available is not None:
+            dashboard_statistics["cash_available"] = cash_available
+
+        console.print(PaperTradeDashboard(dashboard_statistics).render())
     
     try:
         # Fetch initial market data and enrich with indicators.
@@ -3278,8 +3303,9 @@ def main() -> None:
     print_opportunities_table(console, latest_market_data)
     console.print()
     console.print(build_top_opportunity_analysis(latest_market_data))
+    initial_trade_result: dict | None = None
     try:
-        process_paper_trades(
+        initial_trade_result = process_paper_trades(
             latest_market_data,
             seen_entries=scan_journal_entries,
             paper_trade_engine=paper_trade_engine,
@@ -3290,6 +3316,8 @@ def main() -> None:
     console.print(build_trade_plan(latest_market_data))
     console.print()
     console.print(build_position_size_calculator(latest_market_data))
+    console.print()
+    _render_latest_paper_trade_dashboard(initial_trade_result)
     console.print()
 
     # iterations=0 means "single scan only": generate report and exit without background refreshes.
@@ -3315,11 +3343,12 @@ def main() -> None:
                 try:
                     # Enrich with indicators (reuses cached historical/intraday prices when available).
                     latest_market_data = enrich_market_data_with_indicators(market_data, cache=cache)
-                    process_paper_trades(
+                    refresh_trade_result = process_paper_trades(
                         latest_market_data,
                         seen_entries=scan_journal_entries,
                         paper_trade_engine=paper_trade_engine,
                     )
+                    _render_latest_paper_trade_dashboard(refresh_trade_result)
                 except requests.RequestException as exc:
                     console.print(f"[bold red]Could not fetch data: {exc}[/bold red]")
                     if not latest_market_data:
