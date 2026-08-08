@@ -96,6 +96,14 @@ TOP_HISTORY_FETCH = 3  # Number of top-ranked coins eligible for deferred market
 logger = logging.getLogger(__name__)
 
 
+class PaperTradeManager:
+    """Manage paper-trade entry decisions for ranked opportunities."""
+
+    def should_open_trade(self, opportunity: dict) -> bool:
+        """Return whether a paper trade should be opened for the opportunity."""
+        return False
+
+
 class CachedData:
     """Store data with expiration timestamp."""
     def __init__(self, data, ttl_seconds: int):
@@ -1533,13 +1541,48 @@ def get_market_data_for_iteration(
     return enrich_data_func(market_data, cache=cache)
 
 
-def _get_top_opportunity_context(data: List[dict]) -> dict | None:
-    """Return the derived metrics for the highest-ranked opportunity."""
-    ranked = rank_opportunity(data)
-    if not ranked:
-        return None
+def _build_ranked_opportunities_for_trade_decision(data: List[dict]) -> List[dict]:
+    """Return ranked opportunities with core metrics for paper-trade gating."""
+    coin_lookup = {entry.get("id"): entry for entry in data if isinstance(entry, dict)}
+    ranked_opportunities: List[dict] = []
 
-    display_name, coin_id, score = ranked[0]
+    for rank_position, (display_name, coin_id, score) in enumerate(rank_opportunity(data), start=1):
+        entry = coin_lookup.get(coin_id)
+        if entry is None:
+            continue
+
+        trend = get_trend(entry)
+        rating = get_rating(score, trend)
+        rsi_value = entry.get("rsi_14")
+        volume_status = get_volume_status(entry)
+        suggested_action, confidence = get_suggested_action(score, trend, rsi_value, volume_status)
+        ranked_opportunities.append(
+            {
+                "rank": rank_position,
+                "display_name": display_name,
+                "coin_id": coin_id,
+                "score": score,
+                "trend": trend,
+                "rating": rating,
+                "suggested_action": suggested_action,
+                "confidence": confidence,
+                "volume_status": volume_status,
+                "rsi_14": rsi_value,
+                "entry": entry,
+            }
+        )
+
+    return ranked_opportunities
+
+
+def _get_opportunity_context(
+    data: List[dict],
+    display_name: str,
+    coin_id: str,
+    score: int,
+    rank_position: int,
+) -> dict | None:
+    """Return full derived context for a specific ranked opportunity."""
     entry = next((entry for entry in data if entry.get("id") == coin_id), None)
     if entry is None:
         return None
@@ -1566,11 +1609,17 @@ def _get_top_opportunity_context(data: List[dict]) -> dict | None:
     mtf_trend = multi_timeframe.get("composite_trend", "Sideways")
     mtf_score = multi_timeframe.get("composite_score", 50)
 
-    explanation = (
-        f"{display_name} ranks first because its momentum, volume profile, and market-cap strength "
-        f"produce the highest opportunity score ({score}) while the current {trend.lower()} trend "
-        f"and {volume_status.lower()} volume support its lead."
-    )
+    if rank_position == 1:
+        explanation = (
+            f"{display_name} ranks first because its momentum, volume profile, and market-cap strength "
+            f"produce the highest opportunity score ({score}) while the current {trend.lower()} trend "
+            f"and {volume_status.lower()} volume support its lead."
+        )
+    else:
+        explanation = (
+            f"{display_name} is ranked #{rank_position} with an opportunity score of {score}, "
+            f"supported by a {trend.lower()} trend and {volume_status.lower()} volume profile."
+        )
 
     current_price = _get_current_price(entry)
 
@@ -1653,6 +1702,22 @@ def _get_top_opportunity_context(data: List[dict]) -> dict | None:
         "estimated_profit_tp2": estimated_profit_tp2,
         "max_loss_if_stop_hit": max_loss_if_stop_hit,
     }
+
+
+def _get_top_opportunity_context(data: List[dict]) -> dict | None:
+    """Return the derived metrics for the highest-ranked opportunity."""
+    ranked_opportunities = _build_ranked_opportunities_for_trade_decision(data)
+    if not ranked_opportunities:
+        return None
+
+    top_opportunity = ranked_opportunities[0]
+    return _get_opportunity_context(
+        data,
+        display_name=str(top_opportunity["display_name"]),
+        coin_id=str(top_opportunity["coin_id"]),
+        score=int(top_opportunity["score"]),
+        rank_position=int(top_opportunity["rank"]),
+    )
 
 
 def _build_strategy_scorecard(context: dict) -> tuple[list[str], int, str]:
@@ -2303,9 +2368,26 @@ def record_trade_journal_entry(
     timestamp: datetime | None = None,
     starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
     position_size_pct: float = DEFAULT_PAPER_POSITION_SIZE_PCT,
+    paper_trade_manager: PaperTradeManager | None = None,
 ) -> bool:
-    """Open a paper trade for the top opportunity when the existing strategy says BUY."""
-    context = _get_top_opportunity_context(data)
+    """Open a paper trade only when the manager approves a ranked opportunity."""
+    manager = paper_trade_manager or PaperTradeManager()
+    selected_opportunity: dict | None = None
+    ranked_opportunities = _build_ranked_opportunities_for_trade_decision(data)
+    for opportunity in ranked_opportunities:
+        if manager.should_open_trade(opportunity) and selected_opportunity is None:
+            selected_opportunity = opportunity
+
+    if selected_opportunity is None:
+        return False
+
+    context = _get_opportunity_context(
+        data,
+        display_name=str(selected_opportunity["display_name"]),
+        coin_id=str(selected_opportunity["coin_id"]),
+        score=int(selected_opportunity["score"]),
+        rank_position=int(selected_opportunity["rank"]),
+    )
     if context is None:
         return False
 
@@ -2372,6 +2454,7 @@ def process_paper_trades(
     timestamp: datetime | None = None,
     starting_balance: float = DEFAULT_PAPER_STARTING_BALANCE,
     position_size_pct: float = DEFAULT_PAPER_POSITION_SIZE_PCT,
+    paper_trade_manager: PaperTradeManager | None = None,
 ) -> dict:
     """Advance the paper-trading engine for a scan by closing then opening trades."""
     closed_trades = update_open_paper_trades(data, journal_path=journal_path, timestamp=timestamp)
@@ -2382,6 +2465,7 @@ def process_paper_trades(
         timestamp=timestamp,
         starting_balance=starting_balance,
         position_size_pct=position_size_pct,
+        paper_trade_manager=paper_trade_manager,
     )
     trade_rows = load_trade_journal_rows(journal_path)
     return {

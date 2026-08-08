@@ -13,6 +13,20 @@ import atlas_one
 import crypto_scanner
 
 
+class AllowAllPaperTradeManager:
+    def should_open_trade(self, opportunity):
+        return True
+
+
+class RecordingPaperTradeManager:
+    def __init__(self):
+        self.evaluated_coin_ids = []
+
+    def should_open_trade(self, opportunity):
+        self.evaluated_coin_ids.append(opportunity.get("coin_id"))
+        return False
+
+
 class OpportunityScoreTests(unittest.TestCase):
     def test_score_is_bounded_and_ranks_highest_first(self):
         data = [
@@ -933,6 +947,75 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertIn("Open Positions", dashboard)
         self.assertIn("No open paper positions.", dashboard)
 
+    def test_paper_trade_manager_blocks_trade_by_default(self):
+        manager = atlas_one.PaperTradeManager()
+
+        self.assertFalse(manager.should_open_trade({"coin_id": "bitcoin", "score": 99}))
+
+    def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
+        data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 1_000_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.8,
+                "price_change_percentage_24h_in_currency": 5.0,
+                "price_change_percentage_7d_in_currency": 5.0,
+                "rsi_14": 55.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 72,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.8},
+                        "1h": {"trend": "Bullish", "change_percent": 1.4},
+                        "4h": {"trend": "Bullish", "change_percent": 3.2},
+                    },
+                },
+            },
+            {
+                "id": "ethereum",
+                "current_price": 3000,
+                "market_cap": 1_000_000_000,
+                "total_volume": 20_000_000,
+                "price_change_percentage_1h_in_currency": 0.2,
+                "price_change_percentage_24h_in_currency": 2.0,
+                "price_change_percentage_7d_in_currency": 3.0,
+                "rsi_14": 50.0,
+                "support_level": 2900.0,
+                "resistance_level": 3200.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 65,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.4},
+                        "1h": {"trend": "Bullish", "change_percent": 0.8},
+                        "4h": {"trend": "Bullish", "change_percent": 1.1},
+                    },
+                },
+            },
+        ]
+
+        manager = RecordingPaperTradeManager()
+        expected_coin_order = [coin_id for _, coin_id, _ in atlas_one.rank_opportunity(data)]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = os.path.join(temp_dir, "trade_journal.csv")
+            inserted = atlas_one.record_trade_journal_entry(
+                data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                paper_trade_manager=manager,
+            )
+
+        self.assertFalse(inserted)
+        self.assertEqual(manager.evaluated_coin_ids, expected_coin_order)
+
     def test_trade_journal_is_created_with_expected_headers(self):
         data = [
             {
@@ -966,6 +1049,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 journal_path=journal_path,
                 seen_entries=set(),
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
 
             self.assertTrue(inserted)
@@ -1048,12 +1132,14 @@ class OpportunityScoreTests(unittest.TestCase):
                 journal_path=journal_path,
                 seen_entries=seen_entries,
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             second_insert = atlas_one.record_trade_journal_entry(
                 data,
                 journal_path=journal_path,
                 seen_entries=seen_entries,
                 timestamp=datetime(2026, 7, 27, 12, 0, 1),
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
 
             with open(journal_path, newline="", encoding="utf-8") as file_obj:
@@ -1098,6 +1184,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
                 starting_balance=10_000.0,
                 position_size_pct=0.10,
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             rows = atlas_one.load_trade_journal_rows(journal_path)
             snapshot = atlas_one.calculate_portfolio_snapshot(
@@ -1176,6 +1263,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
                 starting_balance=10_000.0,
                 position_size_pct=0.25,
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             second_insert = atlas_one.record_trade_journal_entry(
                 ethereum_data,
@@ -1184,6 +1272,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 timestamp=datetime(2026, 7, 27, 12, 5, 0),
                 starting_balance=10_000.0,
                 position_size_pct=0.25,
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             snapshot = atlas_one.calculate_portfolio_snapshot(
                 data=combined_market_data,
@@ -1258,6 +1347,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
                 starting_balance=1_000.0,
                 position_size_pct=1.0,
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             second_insert = atlas_one.record_trade_journal_entry(
                 ethereum_data,
@@ -1266,6 +1356,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 timestamp=datetime(2026, 7, 27, 12, 5, 0),
                 starting_balance=1_000.0,
                 position_size_pct=1.0,
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             snapshot = atlas_one.calculate_portfolio_snapshot(
                 data=bitcoin_data,
@@ -1364,6 +1455,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 journal_path=journal_path,
                 seen_entries=set(),
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
 
             with open(journal_path, newline="", encoding="utf-8") as file_obj:
@@ -1452,6 +1544,7 @@ class OpportunityScoreTests(unittest.TestCase):
                 journal_path=journal_path,
                 seen_entries=set(),
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             closed_count = atlas_one.update_open_paper_trades(
                 closing_data,
@@ -1505,12 +1598,14 @@ class OpportunityScoreTests(unittest.TestCase):
                 journal_path=journal_path,
                 seen_entries=set(),
                 timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
             second_result = atlas_one.process_paper_trades(
                 closing_data,
                 journal_path=journal_path,
                 seen_entries=set(),
                 timestamp=datetime(2026, 7, 27, 16, 30, 0),
+                paper_trade_manager=AllowAllPaperTradeManager(),
             )
 
         self.assertTrue(first_result["opened_trade"])
