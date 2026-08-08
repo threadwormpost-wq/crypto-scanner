@@ -133,6 +133,33 @@ class PaperTradeManager:
         allocation = normalized_available_cash * allocation_pct
         return min(allocation, normalized_available_cash)
 
+    def calculate_trade_levels(self, opportunity: dict) -> dict | None:
+        """Return paper-trade entry, stop, target and risk/reward for a valid opportunity price."""
+        if not isinstance(opportunity, dict):
+            return None
+
+        price = opportunity.get("current_price")
+        try:
+            entry_price = float(price)
+        except (TypeError, ValueError):
+            return None
+
+        if entry_price <= 0:
+            return None
+
+        stop_loss = entry_price * 0.97
+        take_profit = entry_price * 1.06
+        risk = entry_price - stop_loss
+        reward = take_profit - entry_price
+        risk_reward_ratio = reward / risk if risk > 0 else 0.0
+
+        return {
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "risk_reward_ratio": risk_reward_ratio,
+        }
+
 
 class CachedData:
     """Store data with expiration timestamp."""

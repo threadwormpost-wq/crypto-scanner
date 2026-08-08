@@ -988,6 +988,40 @@ class OpportunityScoreTests(unittest.TestCase):
         manager = atlas_one.PaperTradeManager()
         self.assertEqual(manager.calculate_position_size({"coin_id": "bitcoin", "score": "invalid"}, 1000.0), 0.0)
 
+    def test_paper_trade_manager_trade_levels_valid_opportunity(self):
+        manager = atlas_one.PaperTradeManager()
+        levels = manager.calculate_trade_levels({"coin_id": "bitcoin", "current_price": 100.0})
+
+        self.assertIsNotNone(levels)
+        self.assertAlmostEqual(levels["entry_price"], 100.0)
+
+    def test_paper_trade_manager_trade_levels_stop_loss_is_three_percent_below(self):
+        manager = atlas_one.PaperTradeManager()
+        levels = manager.calculate_trade_levels({"coin_id": "bitcoin", "current_price": 100.0})
+
+        self.assertIsNotNone(levels)
+        self.assertAlmostEqual(levels["stop_loss"], 97.0)
+
+    def test_paper_trade_manager_trade_levels_take_profit_is_six_percent_above(self):
+        manager = atlas_one.PaperTradeManager()
+        levels = manager.calculate_trade_levels({"coin_id": "bitcoin", "current_price": 100.0})
+
+        self.assertIsNotNone(levels)
+        self.assertAlmostEqual(levels["take_profit"], 106.0)
+
+    def test_paper_trade_manager_trade_levels_has_two_to_one_risk_reward_ratio(self):
+        manager = atlas_one.PaperTradeManager()
+        levels = manager.calculate_trade_levels({"coin_id": "bitcoin", "current_price": 100.0})
+
+        self.assertIsNotNone(levels)
+        self.assertAlmostEqual(levels["risk_reward_ratio"], 2.0)
+
+    def test_paper_trade_manager_trade_levels_returns_none_for_missing_or_invalid_price(self):
+        manager = atlas_one.PaperTradeManager()
+
+        self.assertIsNone(manager.calculate_trade_levels({"coin_id": "bitcoin"}))
+        self.assertIsNone(manager.calculate_trade_levels({"coin_id": "bitcoin", "current_price": "invalid"}))
+
     def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
         data = [
             {
