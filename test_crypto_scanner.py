@@ -27,6 +27,47 @@ class RecordingPaperTradeManager:
         return False
 
 
+class AlwaysOpenPaperTradeManager:
+    def should_open_trade(self, opportunity):
+        return True
+
+    def calculate_position_size(self, opportunity, available_cash):
+        return min(100.0, float(available_cash or 0.0))
+
+    def calculate_trade_levels(self, opportunity):
+        current_price = opportunity.get("current_price")
+        if current_price is None:
+            return None
+        entry_price = float(current_price)
+        return {
+            "entry_price": entry_price,
+            "stop_loss": entry_price * 0.97,
+            "take_profit": entry_price * 1.06,
+            "risk_reward_ratio": 2.0,
+        }
+
+    def update_open_position(self, position, current_price):
+        if current_price is None:
+            return {"action": "HOLD", "status": "HOLD", "closed": False, "exit_price": None, "realised_pnl": 0.0}
+        if float(current_price) <= float(position.get("stop_loss")):
+            return {
+                "action": "CLOSE",
+                "status": "STOP_LOSS",
+                "closed": True,
+                "exit_price": float(position.get("stop_loss")),
+                "realised_pnl": (float(position.get("stop_loss")) - float(position.get("entry_price"))) * float(position.get("position_size")),
+            }
+        if float(current_price) >= float(position.get("take_profit")):
+            return {
+                "action": "CLOSE",
+                "status": "TAKE_PROFIT",
+                "closed": True,
+                "exit_price": float(position.get("take_profit")),
+                "realised_pnl": (float(position.get("take_profit")) - float(position.get("entry_price"))) * float(position.get("position_size")),
+            }
+        return {"action": "HOLD", "status": "HOLD", "closed": False, "exit_price": None, "realised_pnl": 0.0}
+
+
 class OpportunityScoreTests(unittest.TestCase):
     def test_score_is_bounded_and_ranks_highest_first(self):
         data = [
@@ -1098,6 +1139,61 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertEqual(result["status"], "HOLD")
         self.assertFalse(result["closed"])
         self.assertEqual(result["action"], "HOLD")
+
+    def test_paper_trade_engine_opens_trade_for_eligible_opportunity(self):
+        engine = atlas_one.PaperTradeEngine()
+        opportunities = [{"coin_id": "bitcoin", "score": 80, "current_price": 100.0}]
+
+        summary = engine.process_latest_opportunities(opportunities, available_cash=10_000.0)
+
+        self.assertEqual(len(summary["new_trades_opened"]), 1)
+        self.assertEqual(len(summary["trades_closed"]), 0)
+        self.assertEqual(len(summary["trades_still_open"]), 1)
+        self.assertEqual(summary["trades_still_open"][0]["coin_id"], "bitcoin")
+
+    def test_paper_trade_engine_ignores_opportunities_failing_entry_rules(self):
+        engine = atlas_one.PaperTradeEngine()
+        opportunities = [{"coin_id": "bitcoin", "score": 69, "current_price": 100.0}]
+
+        summary = engine.process_latest_opportunities(opportunities, available_cash=10_000.0)
+
+        self.assertEqual(len(summary["new_trades_opened"]), 0)
+        self.assertEqual(len(summary["trades_closed"]), 0)
+        self.assertEqual(len(summary["trades_still_open"]), 0)
+
+    def test_paper_trade_engine_ignores_already_open_positions(self):
+        engine = atlas_one.PaperTradeEngine()
+        opportunities = [{"coin_id": "bitcoin", "score": 80, "current_price": 100.0}]
+
+        first_summary = engine.process_latest_opportunities(opportunities, available_cash=10_000.0)
+        second_summary = engine.process_latest_opportunities(opportunities, available_cash=10_000.0)
+
+        self.assertEqual(len(first_summary["new_trades_opened"]), 1)
+        self.assertEqual(len(second_summary["new_trades_opened"]), 0)
+        self.assertEqual(len(second_summary["trades_still_open"]), 1)
+
+    def test_paper_trade_engine_closes_positions_and_removes_from_active_list(self):
+        engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
+        opening_snapshot = [{"coin_id": "bitcoin", "score": 80, "current_price": 100.0}]
+        closing_snapshot = [{"coin_id": "bitcoin", "score": 80, "current_price": 106.0}]
+
+        first_summary = engine.process_latest_opportunities(opening_snapshot, available_cash=10_000.0)
+        second_summary = engine.process_latest_opportunities(closing_snapshot, available_cash=10_000.0)
+
+        self.assertEqual(len(first_summary["new_trades_opened"]), 1)
+        self.assertEqual(len(second_summary["trades_closed"]), 1)
+        self.assertEqual(second_summary["trades_closed"][0]["status"], "TAKE_PROFIT")
+        self.assertEqual(len(second_summary["trades_still_open"]), 0)
+
+    def test_paper_trade_engine_summary_contains_expected_keys(self):
+        engine = atlas_one.PaperTradeEngine()
+        opportunities = [{"coin_id": "bitcoin", "score": 80, "current_price": 100.0}]
+
+        summary = engine.process_latest_opportunities(opportunities, available_cash=10_000.0)
+
+        self.assertIn("new_trades_opened", summary)
+        self.assertIn("trades_closed", summary)
+        self.assertIn("trades_still_open", summary)
 
     def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
         data = [

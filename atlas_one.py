@@ -214,6 +214,106 @@ class PaperTradeManager:
         return hold_response
 
 
+class PaperTradeEngine:
+    """Coordinate paper-trade lifecycle decisions using PaperTradeManager."""
+
+    def __init__(self, paper_trade_manager: PaperTradeManager | None = None):
+        self.paper_trade_manager = paper_trade_manager or PaperTradeManager()
+        self.open_positions: List[dict] = []
+
+    @staticmethod
+    def _get_opportunity_coin_id(opportunity: dict) -> str | None:
+        """Return a stable coin identifier from ranked opportunity payloads."""
+        coin_id = opportunity.get("coin_id") or opportunity.get("id")
+        if coin_id is None:
+            return None
+        return str(coin_id)
+
+    def process_latest_opportunities(self, opportunities: List[dict], available_cash: float) -> dict:
+        """Open and update paper positions from the latest ranked opportunities."""
+        valid_opportunities = [item for item in opportunities if isinstance(item, dict)]
+
+        try:
+            remaining_cash = max(0.0, float(available_cash))
+        except (TypeError, ValueError):
+            remaining_cash = 0.0
+
+        open_coin_ids = {
+            str(position.get("coin_id"))
+            for position in self.open_positions
+            if position.get("coin_id") is not None
+        }
+
+        new_trades_opened: List[dict] = []
+        for opportunity in valid_opportunities:
+            coin_id = self._get_opportunity_coin_id(opportunity)
+            if coin_id is None or coin_id in open_coin_ids:
+                continue
+
+            if not self.paper_trade_manager.should_open_trade(opportunity):
+                continue
+
+            levels = self.paper_trade_manager.calculate_trade_levels(opportunity)
+            if not levels:
+                continue
+
+            allocation_cash = self.paper_trade_manager.calculate_position_size(opportunity, remaining_cash)
+            if allocation_cash <= 0:
+                continue
+
+            entry_price = float(levels.get("entry_price") or 0.0)
+            if entry_price <= 0:
+                continue
+
+            position_units = allocation_cash / entry_price
+            if position_units <= 0:
+                continue
+
+            position = {
+                "coin_id": coin_id,
+                "entry_price": entry_price,
+                "stop_loss": float(levels.get("stop_loss") or 0.0),
+                "take_profit": float(levels.get("take_profit") or 0.0),
+                "risk_reward_ratio": float(levels.get("risk_reward_ratio") or 0.0),
+                "position_size": position_units,
+                "allocated_cash": allocation_cash,
+                "status": "OPEN",
+            }
+            self.open_positions.append(position)
+            open_coin_ids.add(coin_id)
+            remaining_cash = max(0.0, remaining_cash - allocation_cash)
+            new_trades_opened.append(dict(position))
+
+        latest_price_by_coin_id: Dict[str, object] = {}
+        for opportunity in valid_opportunities:
+            coin_id = self._get_opportunity_coin_id(opportunity)
+            if coin_id is None:
+                continue
+            latest_price_by_coin_id[coin_id] = opportunity.get("current_price")
+
+        trades_closed: List[dict] = []
+        active_positions: List[dict] = []
+        for position in self.open_positions:
+            coin_id = str(position.get("coin_id")) if position.get("coin_id") is not None else ""
+            update_result = self.paper_trade_manager.update_open_position(
+                position,
+                latest_price_by_coin_id.get(coin_id),
+            )
+            if update_result.get("closed"):
+                closed_position = dict(position)
+                closed_position.update(update_result)
+                trades_closed.append(closed_position)
+                continue
+            active_positions.append(position)
+
+        self.open_positions = active_positions
+        return {
+            "new_trades_opened": new_trades_opened,
+            "trades_closed": trades_closed,
+            "trades_still_open": [dict(position) for position in self.open_positions],
+        }
+
+
 class CachedData:
     """Store data with expiration timestamp."""
     def __init__(self, data, ttl_seconds: int):
