@@ -959,6 +959,35 @@ class OpportunityScoreTests(unittest.TestCase):
         manager = atlas_one.PaperTradeManager()
         self.assertTrue(manager.should_open_trade({"coin_id": "bitcoin", "score": 95}))
 
+    def test_paper_trade_manager_position_size_score_69_returns_zero(self):
+        manager = atlas_one.PaperTradeManager()
+        self.assertEqual(manager.calculate_position_size({"coin_id": "bitcoin", "score": 69}, 1000.0), 0.0)
+
+    def test_paper_trade_manager_position_size_score_70_returns_two_percent(self):
+        manager = atlas_one.PaperTradeManager()
+        self.assertAlmostEqual(
+            manager.calculate_position_size({"coin_id": "bitcoin", "score": 70}, 1000.0),
+            20.0,
+        )
+
+    def test_paper_trade_manager_position_size_score_80_returns_three_percent(self):
+        manager = atlas_one.PaperTradeManager()
+        self.assertAlmostEqual(
+            manager.calculate_position_size({"coin_id": "bitcoin", "score": 80}, 1000.0),
+            30.0,
+        )
+
+    def test_paper_trade_manager_position_size_score_90_returns_five_percent(self):
+        manager = atlas_one.PaperTradeManager()
+        self.assertAlmostEqual(
+            manager.calculate_position_size({"coin_id": "bitcoin", "score": 90}, 1000.0),
+            50.0,
+        )
+
+    def test_paper_trade_manager_position_size_invalid_score_returns_zero(self):
+        manager = atlas_one.PaperTradeManager()
+        self.assertEqual(manager.calculate_position_size({"coin_id": "bitcoin", "score": "invalid"}, 1000.0), 0.0)
+
     def test_record_trade_journal_entry_evaluates_all_ranked_opportunities(self):
         data = [
             {

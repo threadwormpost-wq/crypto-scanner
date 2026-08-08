@@ -109,6 +109,30 @@ class PaperTradeManager:
         except (TypeError, ValueError):
             return False
 
+    def calculate_position_size(self, opportunity: dict, available_cash: float) -> float:
+        """Return the cash amount to allocate from available cash based on score tiers."""
+        score = opportunity.get("score") if isinstance(opportunity, dict) else None
+        if score is None:
+            return 0.0
+
+        try:
+            normalized_score = float(score)
+            normalized_available_cash = max(0.0, float(available_cash))
+        except (TypeError, ValueError):
+            return 0.0
+
+        if normalized_score >= 90.0:
+            allocation_pct = 0.05
+        elif normalized_score >= 80.0:
+            allocation_pct = 0.03
+        elif normalized_score >= 70.0:
+            allocation_pct = 0.02
+        else:
+            return 0.0
+
+        allocation = normalized_available_cash * allocation_pct
+        return min(allocation, normalized_available_cash)
+
 
 class CachedData:
     """Store data with expiration timestamp."""
