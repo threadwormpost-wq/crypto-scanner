@@ -381,6 +381,67 @@ class PaperTradeStatistics:
         }
 
 
+class PaperTradeDashboard:
+    """Render paper-trading statistics as a formatted, presentation-only dashboard."""
+
+    BORDER = "=" * 40
+
+    def __init__(self, statistics: dict):
+        self.statistics = statistics if isinstance(statistics, dict) else {}
+
+    @staticmethod
+    def _format_count(value: object) -> str:
+        """Return integer-like values as whole-number text for dashboard rows."""
+        try:
+            return str(int(value))
+        except (TypeError, ValueError):
+            return "0"
+
+    @staticmethod
+    def _format_currency(value: object) -> str:
+        """Return GBP currency text for dashboard rows."""
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return "£0.00"
+        return f"£{numeric_value:,.2f}"
+
+    @staticmethod
+    def _format_percentage(value: object) -> str:
+        """Return percentage text for dashboard rows."""
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return "0.00%"
+        return f"{numeric_value:.2f}%"
+
+    def render(self) -> str:
+        """Return a formatted, read-only text dashboard from statistics input."""
+        current_balance = self.statistics.get("current_account_balance")
+        cash_available = self.statistics.get("cash_available", current_balance)
+
+        lines = [
+            self.BORDER,
+            "ATLAS ONE PAPER ACCOUNT",
+            self.BORDER,
+            "",
+            f"Current Balance: {self._format_currency(current_balance)}",
+            f"Cash Available: {self._format_currency(cash_available)}",
+            f"Open Trades: {self._format_count(self.statistics.get('open_trades'))}",
+            f"Closed Trades: {self._format_count(self.statistics.get('closed_trades'))}",
+            f"Winning Trades: {self._format_count(self.statistics.get('winning_trades'))}",
+            f"Losing Trades: {self._format_count(self.statistics.get('losing_trades'))}",
+            f"Win Rate: {self._format_percentage(self.statistics.get('win_rate'))}",
+            f"Total Realised PnL: {self._format_currency(self.statistics.get('total_realised_pnl'))}",
+            f"Average Realised PnL: {self._format_currency(self.statistics.get('average_realised_pnl'))}",
+            f"Best Trade: {self._format_currency(self.statistics.get('best_trade'))}",
+            f"Worst Trade: {self._format_currency(self.statistics.get('worst_trade'))}",
+            "",
+            self.BORDER,
+        ]
+        return "\n".join(lines)
+
+
 class CachedData:
     """Store data with expiration timestamp."""
     def __init__(self, data, ttl_seconds: int):

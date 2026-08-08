@@ -1338,6 +1338,70 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertEqual(stats["total_trades"], 4)
         self.assertEqual(stats["current_account_balance"], 9_600.0)
 
+    def test_paper_trade_dashboard_render_includes_required_fields(self):
+        statistics = {
+            "total_trades": 5,
+            "open_trades": 2,
+            "closed_trades": 3,
+            "winning_trades": 2,
+            "losing_trades": 1,
+            "win_rate": 66.67,
+            "total_realised_pnl": 120.5,
+            "average_realised_pnl": 40.166,
+            "best_trade": 100.0,
+            "worst_trade": -25.0,
+            "current_account_balance": 10_120.5,
+            "cash_available": 9_400.0,
+        }
+
+        rendered = atlas_one.PaperTradeDashboard(statistics).render()
+
+        self.assertIn("========================================", rendered)
+        self.assertIn("ATLAS ONE PAPER ACCOUNT", rendered)
+        self.assertIn("Current Balance: £10,120.50", rendered)
+        self.assertIn("Cash Available: £9,400.00", rendered)
+        self.assertIn("Open Trades: 2", rendered)
+        self.assertIn("Closed Trades: 3", rendered)
+        self.assertIn("Winning Trades: 2", rendered)
+        self.assertIn("Losing Trades: 1", rendered)
+        self.assertIn("Win Rate: 66.67%", rendered)
+        self.assertIn("Total Realised PnL: £120.50", rendered)
+        self.assertIn("Average Realised PnL: £40.17", rendered)
+        self.assertIn("Best Trade: £100.00", rendered)
+        self.assertIn("Worst Trade: £-25.00", rendered)
+
+    def test_paper_trade_dashboard_uses_statistics_from_paper_trade_statistics(self):
+        engine = atlas_one.PaperTradeEngine()
+        stats = atlas_one.PaperTradeStatistics().calculate(
+            paper_trade_engine=engine,
+            closed_trades=[],
+            starting_balance=10_000.0,
+        )
+
+        rendered = atlas_one.PaperTradeDashboard(stats).render()
+
+        self.assertIn("Current Balance: £10,000.00", rendered)
+        self.assertIn("Cash Available: £10,000.00", rendered)
+
+    def test_paper_trade_dashboard_render_is_read_only(self):
+        statistics = {
+            "open_trades": 1,
+            "closed_trades": 2,
+            "winning_trades": 1,
+            "losing_trades": 1,
+            "win_rate": 50.0,
+            "total_realised_pnl": 10.0,
+            "average_realised_pnl": 5.0,
+            "best_trade": 20.0,
+            "worst_trade": -10.0,
+            "current_account_balance": 9_900.0,
+        }
+        expected = dict(statistics)
+
+        atlas_one.PaperTradeDashboard(statistics).render()
+
+        self.assertEqual(statistics, expected)
+
     def test_process_paper_trades_engine_summary_no_opportunities(self):
         engine = atlas_one.PaperTradeEngine(paper_trade_manager=AlwaysOpenPaperTradeManager())
 
