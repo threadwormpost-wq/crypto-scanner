@@ -888,16 +888,19 @@ class OpportunityScoreTests(unittest.TestCase):
             "paper_trade_engine_summary": {"trades_closed": []},
             "portfolio_snapshot": {"available_cash": 10_000.0},
         }
+        mock_live = unittest.mock.MagicMock()
+        mock_live.__enter__.return_value = mock_live
+        mock_live.__exit__.return_value = False
 
         with patch(
             "atlas_one.argparse.ArgumentParser.parse_args",
-            return_value=crypto_scanner.argparse.Namespace(refresh_interval=0, iterations=2),
+            return_value=crypto_scanner.argparse.Namespace(refresh_interval=0, iterations=3),
         ), patch("atlas_one.Console", return_value=mock_console), patch(
             "atlas_one.fetch_market_data",
-            side_effect=[initial_market_data, refreshed_market_data],
+            side_effect=[initial_market_data, refreshed_market_data, refreshed_market_data],
         ) as mock_fetch_market_data, patch(
             "atlas_one.enrich_market_data_with_indicators",
-            side_effect=[initial_enriched, final_enriched],
+            side_effect=[initial_enriched, final_enriched, final_enriched],
         ) as mock_enrich, patch(
             "atlas_one.build_portfolio_dashboard",
             return_value=sentinel_dashboard,
@@ -906,7 +909,7 @@ class OpportunityScoreTests(unittest.TestCase):
             return_value=sentinel_analysis,
         ), patch(
             "atlas_one.process_paper_trades",
-            return_value=trade_result,
+            side_effect=[trade_result, trade_result, trade_result],
         ) as mock_process_paper_trades, patch(
             "atlas_one.build_trade_plan",
             return_value=sentinel_trade_plan,
@@ -919,27 +922,31 @@ class OpportunityScoreTests(unittest.TestCase):
         ) as mock_statistics_calculate, patch(
             "atlas_one.PaperTradeDashboard.render",
             return_value=sentinel_paper_dashboard,
-        ), patch("atlas_one.build_table", return_value=sentinel_table) as mock_build_table, patch(
+        ), patch("atlas_one.Live", return_value=mock_live), patch("atlas_one.build_table", return_value=sentinel_table) as mock_build_table, patch(
             "atlas_one.log_request_audit"
         ), patch("atlas_one.time.sleep"):
             atlas_one.main()
 
-        self.assertEqual(mock_fetch_market_data.call_count, 2)
-        self.assertEqual(mock_enrich.call_count, 2)
-        self.assertEqual(mock_process_paper_trades.call_count, 2)
-        self.assertEqual(mock_statistics_calculate.call_count, 2)
+        self.assertEqual(mock_fetch_market_data.call_count, 3)
+        self.assertEqual(mock_enrich.call_count, 3)
+        self.assertEqual(mock_process_paper_trades.call_count, 3)
+        self.assertEqual(mock_statistics_calculate.call_count, 3)
         mock_build_table.assert_called_once_with(initial_enriched)
         printed_values = [call_args.args[0] for call_args in mock_console.print.call_args_list if call_args.args]
         self.assertEqual(printed_values.count(sentinel_table), 1)
         dashboard_index = printed_values.index(sentinel_dashboard)
         top_index = printed_values.index("[bold cyan]TOP OPPORTUNITIES[/bold cyan]")
-        paper_dashboard_index = printed_values.index(sentinel_paper_dashboard)
         self.assertLess(dashboard_index, top_index)
-        self.assertGreater(paper_dashboard_index, top_index)
         self.assertEqual(printed_values[top_index + 1], sentinel_table)
         self.assertEqual(printed_values[top_index + 2], sentinel_analysis)
         self.assertEqual(printed_values[top_index + 3], sentinel_trade_plan)
         self.assertEqual(printed_values[top_index + 4], sentinel_position_size)
+        self.assertEqual(printed_values.count(sentinel_paper_dashboard), 0)
+        self.assertEqual(mock_live.update.call_count, 2)
+        self.assertEqual(
+            [call_args.args[0] for call_args in mock_live.update.call_args_list],
+            [sentinel_paper_dashboard, sentinel_paper_dashboard],
+        )
 
     def test_main_uses_shared_engine_for_paper_trade_statistics(self):
         market_data = [{"id": "bitcoin", "current_price": 50000, "rsi_14": 55.0}]
@@ -957,6 +964,9 @@ class OpportunityScoreTests(unittest.TestCase):
                 "portfolio_snapshot": {"available_cash": 9_850.0},
             },
         ]
+        mock_live = unittest.mock.MagicMock()
+        mock_live.__enter__.return_value = mock_live
+        mock_live.__exit__.return_value = False
 
         with patch(
             "atlas_one.argparse.ArgumentParser.parse_args",
@@ -988,7 +998,7 @@ class OpportunityScoreTests(unittest.TestCase):
         ), patch(
             "atlas_one.PaperTradeDashboard.render",
             return_value="paper dashboard",
-        ), patch(
+        ), patch("atlas_one.Live", return_value=mock_live), patch(
             "atlas_one.log_request_audit"
         ), patch("atlas_one.time.sleep"), patch(
             "atlas_one.PaperTradeStatistics.calculate",
@@ -1017,6 +1027,9 @@ class OpportunityScoreTests(unittest.TestCase):
                 "portfolio_snapshot": {"available_cash": 9_850.0},
             },
         ]
+        mock_live = unittest.mock.MagicMock()
+        mock_live.__enter__.return_value = mock_live
+        mock_live.__exit__.return_value = False
 
         with patch(
             "atlas_one.argparse.ArgumentParser.parse_args",
@@ -1048,7 +1061,7 @@ class OpportunityScoreTests(unittest.TestCase):
         ), patch(
             "atlas_one.PaperTradeDashboard.render",
             return_value="paper dashboard",
-        ), patch(
+        ), patch("atlas_one.Live", return_value=mock_live), patch(
             "atlas_one.log_request_audit"
         ), patch("atlas_one.time.sleep"), patch(
             "atlas_one.PaperTradeStatistics.calculate",

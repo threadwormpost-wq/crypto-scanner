@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 import requests
 from rich.console import Console
+from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
@@ -3269,8 +3270,8 @@ def main() -> None:
     latest_market_data: List[dict] = []
     scan_journal_entries: set[tuple] = set()
 
-    def _render_latest_paper_trade_dashboard(paper_trade_result: dict | None) -> None:
-        """Render the paper account dashboard from latest engine state and closed history."""
+    def _build_latest_paper_trade_dashboard(paper_trade_result: dict | None) -> str:
+        """Build the paper account dashboard from latest engine state and closed history."""
         result_payload = paper_trade_result if isinstance(paper_trade_result, dict) else {}
         summary_payload = result_payload.get("paper_trade_engine_summary")
         closed_trades = summary_payload.get("trades_closed") if isinstance(summary_payload, dict) else []
@@ -3290,7 +3291,21 @@ def main() -> None:
         if cash_available is not None:
             dashboard_statistics["cash_available"] = cash_available
 
-        console.print(PaperTradeDashboard(dashboard_statistics).render())
+        return PaperTradeDashboard(dashboard_statistics).render()
+
+    def _process_and_build_paper_trade_dashboard(market_snapshot: List[dict]) -> tuple[dict | None, str]:
+        """Update paper-trade state for a cycle and build the dashboard once."""
+        trade_result: dict | None = None
+        try:
+            trade_result = process_paper_trades(
+                market_snapshot,
+                seen_entries=scan_journal_entries,
+                paper_trade_engine=paper_trade_engine,
+            )
+        except OSError as exc:
+            logger.warning("Could not write trade journal entry: %s", exc)
+
+        return trade_result, _build_latest_paper_trade_dashboard(trade_result)
     
     try:
         # Fetch initial market data and enrich with indicators.
@@ -3308,66 +3323,53 @@ def main() -> None:
     print_opportunities_table(console, latest_market_data)
     console.print()
     console.print(build_top_opportunity_analysis(latest_market_data))
-    initial_trade_result: dict | None = None
-    try:
-        initial_trade_result = process_paper_trades(
-            latest_market_data,
-            seen_entries=scan_journal_entries,
-            paper_trade_engine=paper_trade_engine,
-        )
-    except OSError as exc:
-        logger.warning("Could not write trade journal entry: %s", exc)
     console.print()
     console.print(build_trade_plan(latest_market_data))
     console.print()
     console.print(build_position_size_calculator(latest_market_data))
     console.print()
-    _render_latest_paper_trade_dashboard(initial_trade_result)
-    console.print()
+    _initial_trade_result, initial_dashboard = _process_and_build_paper_trade_dashboard(latest_market_data)
 
     # iterations=0 means "single scan only": generate report and exit without background refreshes.
-    if args.iterations == 0:
-        log_request_audit(console, cache)
-        return
+    with Live(initial_dashboard, console=console, refresh_per_second=4, transient=False) as paper_trade_live:
+        if args.iterations == 0:
+            log_request_audit(console, cache)
+            return
 
-    total_iterations = 1_000_000 if args.iterations is None else args.iterations
+        total_iterations = 1_000_000 if args.iterations is None else args.iterations
 
-    try:
-        for iteration in range(total_iterations):
-            # Reuse the initial market snapshot on iteration 0 to avoid a duplicate request.
-            market_data = get_market_data_for_iteration(
-                iteration,
-                latest_market_data,
-                lambda: fetch_market_data(cache),
-                None,
-                cache,
-            )
+        try:
+            for iteration in range(total_iterations):
+                # Reuse the initial market snapshot on iteration 0 to avoid a duplicate request.
+                market_data = get_market_data_for_iteration(
+                    iteration,
+                    latest_market_data,
+                    lambda: fetch_market_data(cache),
+                    None,
+                    cache,
+                )
 
-            # Skip a redundant indicator pass on iteration 0; data is already enriched.
-            if iteration > 0:
-                try:
-                    # Enrich with indicators (reuses cached historical/intraday prices when available).
-                    latest_market_data = enrich_market_data_with_indicators(market_data, cache=cache)
-                    refresh_trade_result = process_paper_trades(
-                        latest_market_data,
-                        seen_entries=scan_journal_entries,
-                        paper_trade_engine=paper_trade_engine,
-                    )
-                    _render_latest_paper_trade_dashboard(refresh_trade_result)
-                except requests.RequestException as exc:
-                    console.print(f"[bold red]Could not fetch data: {exc}[/bold red]")
-                    if not latest_market_data:
-                        if args.iterations is not None and iteration + 1 >= args.iterations:
-                            break
-                        time.sleep(args.refresh_interval)
-                        continue
+                # Skip a redundant indicator pass on iteration 0; data is already enriched.
+                if iteration > 0:
+                    try:
+                        # Enrich with indicators (reuses cached historical/intraday prices when available).
+                        latest_market_data = enrich_market_data_with_indicators(market_data, cache=cache)
+                        _, dashboard_renderable = _process_and_build_paper_trade_dashboard(latest_market_data)
+                        paper_trade_live.update(dashboard_renderable)
+                    except requests.RequestException as exc:
+                        console.print(f"[bold red]Could not fetch data: {exc}[/bold red]")
+                        if not latest_market_data:
+                            if args.iterations is not None and iteration + 1 >= args.iterations:
+                                break
+                            time.sleep(args.refresh_interval)
+                            continue
 
-            if args.iterations is not None and iteration + 1 >= args.iterations:
-                break
+                if args.iterations is not None and iteration + 1 >= args.iterations:
+                    break
 
-            time.sleep(args.refresh_interval)
-    finally:
-        log_request_audit(console, cache)
+                time.sleep(args.refresh_interval)
+        finally:
+            log_request_audit(console, cache)
 
 
 if __name__ == "__main__":
