@@ -1728,6 +1728,47 @@ class OpportunityScoreTests(unittest.TestCase):
         self.assertFalse(inserted)
         self.assertEqual(manager.evaluated_coin_ids, expected_coin_order)
 
+    def test_trade_journal_creates_parent_directories_for_nested_paths(self):
+        data = [
+            {
+                "id": "bitcoin",
+                "current_price": 50000,
+                "market_cap": 100_000_000,
+                "total_volume": 30_000_000,
+                "price_change_percentage_1h_in_currency": 0.8,
+                "price_change_percentage_24h_in_currency": 5.0,
+                "price_change_percentage_7d_in_currency": 5.0,
+                "rsi_14": 55.0,
+                "support_level": 48000.0,
+                "resistance_level": 52000.0,
+                "support_resistance_status": "Between Levels",
+                "multi_timeframe": {
+                    "composite_trend": "Bullish",
+                    "composite_score": 72,
+                    "timeframes": {
+                        "15m": {"trend": "Bullish", "change_percent": 0.8},
+                        "1h": {"trend": "Bullish", "change_percent": 1.4},
+                        "4h": {"trend": "Bullish", "change_percent": 3.2},
+                    },
+                },
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_dir = os.path.join(temp_dir, "nested", "journals")
+            journal_path = os.path.join(journal_dir, "trade_journal.csv")
+            inserted = atlas_one.record_trade_journal_entry(
+                data,
+                journal_path=journal_path,
+                seen_entries=set(),
+                timestamp=datetime(2026, 7, 27, 12, 0, 0),
+                paper_trade_manager=AllowAllPaperTradeManager(),
+            )
+
+            self.assertTrue(inserted)
+            self.assertTrue(os.path.exists(journal_path))
+            self.assertTrue(os.path.isdir(journal_dir))
+
     def test_trade_journal_is_created_with_expected_headers(self):
         data = [
             {

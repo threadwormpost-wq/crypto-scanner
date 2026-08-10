@@ -2226,6 +2226,10 @@ def load_trade_journal_rows(journal_path: str = TRADE_JOURNAL_FILE) -> List[dict
 
 def _write_trade_journal_rows(rows: List[dict], journal_path: str = TRADE_JOURNAL_FILE) -> None:
     """Rewrite the trade journal with the provided rows."""
+    journal_dir = os.path.dirname(journal_path)
+    if journal_dir:
+        os.makedirs(journal_dir, exist_ok=True)
+
     with open(journal_path, "w", newline="", encoding="utf-8") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=TRADE_JOURNAL_HEADERS)
         writer.writeheader()
@@ -2676,6 +2680,10 @@ def calculate_performance_statistics(trade_rows: List[dict]) -> dict:
 
 def _ensure_trade_journal_schema(journal_path: str) -> bool:
     """Ensure the journal CSV exists with the latest headers; migrate older headers when needed."""
+    journal_dir = os.path.dirname(journal_path)
+    if journal_dir:
+        os.makedirs(journal_dir, exist_ok=True)
+
     if not os.path.exists(journal_path) or os.path.getsize(journal_path) == 0:
         return True
 
@@ -2776,6 +2784,10 @@ def record_trade_journal_entry(
         if dedupe_key in seen_entries:
             return False
         seen_entries.add(dedupe_key)
+
+    journal_dir = os.path.dirname(journal_path)
+    if journal_dir:
+        os.makedirs(journal_dir, exist_ok=True)
 
     with open(journal_path, "a", newline="", encoding="utf-8") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=TRADE_JOURNAL_HEADERS)
