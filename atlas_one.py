@@ -44,7 +44,7 @@ OHLC_API_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
 USD_TO_GBP_RATE_URL = "https://api.frankfurter.app/latest?from=USD&to=GBP"
 DEFAULT_USD_TO_GBP_RATE = 0.79
 DEBUG = False
-TRADE_JOURNAL_FILE = "trade_journal.csv"
+TRADE_JOURNAL_FILE = "/data/trade_journal.csv" if os.path.isdir("/data") else "trade_journal.csv"
 TRADE_JOURNAL_HEADERS = [
     "Date/Time",
     "Coin",
